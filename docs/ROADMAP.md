@@ -30,7 +30,7 @@ Frontend (Vite+React+TS+Tailwind), Backend (Node/TS/Express), Postgres (docker-c
 Gate: `docker-compose up` boots db+backend+frontend; `forge test` runs; CI green.
 
 ### PHASE 2 — Database + Backend core
-Migrations + seeds; auth; RBAC; cities; parking registry; operators; slots; availability engine (manual); audit logs; basic APIs; WebSocket hub stub.
+Migrations + seeds; auth; RBAC; cities; parking registry; operators; slots; availability engine (manual); audit logs; basic APIs; WebSocket hub stub. Operator verification documents + document APIs (metadata in DB, binary in MinIO/local object storage per `ARCHITECTURE.md` §12).
 
 ### PHASE 3 — Frontend
 Login/home/map/search/facility details/dashboards (user, operator, admin, gate). i18n (EN/MR/HI). Map via MapProvider abstraction (free).
@@ -42,7 +42,7 @@ Availability → reserve (exclusion-guarded) → mock payment → confirm → ca
 Foundry contracts (ParkingRegistryV1, ReservationV1, ParkingTokenV1) + deploy to Anvil + backend integration + contract tests.
 
 ### PHASE 6 — QR + Gate
-QR generation/scanning, verification, entry/exit, override-with-reason, gate staff RBAC.
+QR generation/scanning, verification, entry/exit, override-with-reason, gate staff RBAC. After online verification is stable: Offline Gate Mode enhancement (bounded local cache, event queue, resync, conflict resolution — `ARCHITECTURE.md` §11).
 
 ### PHASE 7 — Mock payment
 `PaymentProvider` interface + `MockPaymentProvider`; states INITIATED/PENDING/SUCCESS/FAILED/REFUNDED; idempotency.

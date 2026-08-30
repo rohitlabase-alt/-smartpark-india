@@ -47,6 +47,9 @@ iot_devices 1──n iot_readings
 parking_facilities 1──n iot_devices
 parking_slots     1──n iot_readings (or 1─1 latest)
 
+operators 1──n documents
+parking_facilities 1──n documents    (operator verification docs / parking images)
+
 users 1──n notifications
 audit_logs reference arbitrary entities via (table_name, record_id)
 ```
@@ -360,6 +363,44 @@ This table is the normalized output the API/WS actually serves.
 | user_agent | TEXT NULL | |
 | created_at | TIMESTAMPTZ | append-only (no UPDATE/DELETE grants) |
 
+### 2.23 documents
+
+Operator verification documents and parking images. Stores **metadata + reference only**; the binary lives in S3-compatible object storage abstraction, not PostgreSQL (see `ARCHITECTURE.md` §12).
+
+| column | type | notes |
+|---|---|---|
+| id | BIGSERIAL PK | |
+| document_id | VARCHAR(64) UNIQUE | public ref, e.g., DOC-1001 |
+| operator_id | FK operators NULL | required for operator verification docs |
+| parking_id | FK parking_facilities NULL | required for facility/parking images |
+| uploaded_by | FK users NULL | who uploaded |
+| storage_key | VARCHAR(255) NOT NULL | object-storage key (no PII, no public enumeration); binary is NOT in DB |
+| document_type | VARCHAR(48) NOT NULL | e.g., operator_license/registration_proof/id_proof/parking_image/other |
+| mime_type | VARCHAR(80) NOT NULL | validated by magic bytes |
+| file_size | INTEGER NOT NULL | bytes |
+| checksum | TEXT NULL | e.g., SHA-256, integrity check |
+| verification_status | VARCHAR(24) NOT NULL | PENDING/UNDER_REVIEW/VERIFIED/REJECTED (aligns with facility/operator vocabulary) |
+| verification_note | TEXT NULL | reviewer note / rejection reason |
+| reviewed_by | FK users NULL | verifier/admin |
+| reviewed_at | TIMESTAMPTZ NULL | |
+| expires_at | TIMESTAMPTZ NULL | policy-driven (e.g., license expiry); optional |
+| deleted_at | TIMESTAMPTZ NULL | soft delete |
+
+Constraints:
+- CHECK `(operator_id IS NOT NULL OR parking_id IS NOT NULL)` — a document must belong to an operator or a facility (or both for a facility-level document tied to its operator).
+- FK `ON DELETE RESTRICT` for verified/reviewed documents; children linking to soft-deleted parents remain for audit history.
+
+Indexes:
+- `documents_operator_idx` (operator_id) 
+- `documents_parking_idx` (parking_id)
+- `documents_status_idx` (verification_status) — supports admin review queues
+- `documents_document_id_idx` unique (document_id)
+
+Lifecycle:
+1. Operator uploads document (multipart, validated type/size) → inserted with `verification_status=PENDING`, object stored via `ObjectStorageProvider.put`, `storage_key` persisted (metadata only in DB).
+2. Verifier/admin marks `UNDER_REVIEW` (optional) then `VERIFIED` or `REJECTED` (with `verification_note`).
+3. Deletion: soft-delete row first, then delete object from storage; runs through retention/deletion jobs (see `ARCHITECTURE.md` §12.7, `COMPLIANCE.md` §4).
+
 ---
 
 ## 3. Integrity & Concurrency
@@ -379,6 +420,7 @@ This table is the normalized output the API/WS actually serves.
 - parking_slots(slot_code) unique, (facility_id, status)
 - reservations(reservation_code) unique, (user_id), (facility_id, starts_at), partial (slot_id, state)
 - parking_tokens(token_id) unique
+- documents(operator_id), (parking_id), (verification_status), (document_id) unique
 - bookings ONLOOKUP: partial indexes for pending payment cleanup
 - iot_readings(device_id, received_at DESC)
 - audit_logs(entity_type, entity_id), (created_at DESC)
@@ -396,5 +438,6 @@ This table is the normalized output the API/WS actually serves.
 ## 6. Data Privacy Notes
 
 - Personal data (phone, email, plates) lives here in the DB, NOT on-chain.
+- Uploaded documents may contain personal or business identity data; the binary lives in object storage (private, access-scoped), the DB holds metadata only. Document retention/deletion follows `COMPLIANCE.md` §4 and `ARCHITECTURE.md` §12.7.
 - Retention/deletion workflows tie to `COMPLIANCE.md`.
 - Audit logs keep actor + snapshots append-only.

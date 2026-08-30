@@ -19,7 +19,7 @@ Principle (from master prompt §23): use local/free/open-source/mock services wh
 | SMS | Mock provider (no real SMS in V1) | ₹0 | Paid SMS API (transactional) later |
 | Email | Local dev mail / console mock | ₹0 | Free tiers (e.g., SMTP/transactional) later |
 | Push | In-app notifications only (no FCM in V1) | ₹0 | Firebase/APNs at mobile phase |
-| Storage | Local disk / Postgres | ₹0 | Object storage (S3-compatible) at Level 3 |
+| Storage | Object storage abstraction (S3-compatible); **MinIO in Docker** (local, free) for documents/images in V1 | ₹0 | Managed S3-compatible provider + CDN at scale (Level 3) |
 | Monitoring | Console + structured logs (self-hosted opt-in) | ₹0 | Sentry/OTel at production |
 | IoT hardware | Simulator only in V1 (software) | ₹0 | ESP32 (~₹500–800/unit) + connectivity at Phase 9 |
 | IoT connectivity | Not applicable (simulator) | ₹0 | SIM/eSIM/MQTT broker fees later |

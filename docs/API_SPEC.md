@@ -1,6 +1,6 @@
 # SmartPark India — API Specification (V1)
 
-Status: DRAFT v0.1
+Status: DRAFT v0.1 (Phase 0A)
 Last updated: 2026-08-30
 Base path: `/api/v1`
 Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
@@ -135,6 +135,30 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 | GET | /admin/reservations | admin | monitor reservations |
 | GET | /admin/audit-logs | admin | audit log query (paginated/filter) |
 
+### documents
+Metadata lives in the DB; binary lives in private S3-compatible object storage. **Private storage is never exposed directly** — clients get metadata via API and short-lived signed URLs only (`ARCHITECTURE.md` §12).
+
+| method | path | role | description |
+|---|---|---|---|
+| POST | /operators/me/documents | operator | upload operator verification document (multipart) |
+| GET | /operators/me/documents | operator | list own documents (metadata only) |
+| GET | /operators/me/documents/{documentId} | operator | document metadata + signed download URL (TTL-limited) |
+| POST | /operators/me/facilities/{facilityId}/documents | operator | upload parking facility image/attachment |
+| GET | /operators/me/facilities/{facilityId}/documents | operator | list facility documents |
+| GET | /admin/documents | admin/verifier | review queue (filter by verification_status, pending first) |
+| GET | /admin/documents/{documentId} | admin/verifier | metadata + signed download URL (review use) |
+| POST | /admin/documents/{documentId}/verify | verifier/admin | approve document → VERIFIED |
+| POST | /admin/documents/{documentId}/reject | verifier/admin | reject with required note → REJECTED |
+
+Authorization rules:
+- Operators can only access documents of their own operator org / own facilities (ownership + facility-scope checks; IDOR resistance per `SECURITY.md`).
+- Verifier/admin can access the full review queue.
+- All download access is via short-lived signed URLs; every issuance is audit-logged.
+
+Implementation status:
+- Endpoints are defined now as the V1 contract.
+- Operationally they land with the **Operator onboarding + Admin verification work in Phase 2/6** (see `ROADMAP.md`); nothing in this spec asserts they already exist.
+
 ### iot
 | method | path | role | description |
 |---|---|---|---|
@@ -223,6 +247,7 @@ Fallback: when WS unavailable, client polls `GET /parking/{id}/availability` eve
   - telemetry: 60/min/device (configurable)
   - public search: 60/min/IP
   - verification/entry/exit: 120/min/user
+  - document upload: 10/min/user; signed URL issuance: 120/min/user
 - Idempotency keys: one-time per key, TTL to prevent duplicate reserve/pay.
 
 ---

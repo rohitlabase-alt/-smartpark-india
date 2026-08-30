@@ -85,6 +85,31 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** cost + "prototype ≠ production" (§38).
 - **Status:** ACTIVE.
 
+## D-017 — S3-compatible object storage abstraction (MinIO in V1)
+- **Decision:** All large blobs (operator verification documents, parking images) go to an S3-compatible `ObjectStorageProvider` abstraction; DB stores metadata + `storage_key` only. V1 = MinIO in Docker (₹0); AWS S3 / any S3-compatible provider is a config swap, never a code change. Buckets private; access only via short-lived signed URLs; per-type file size/MIME defaults are change-controlled policy values (`ARCHITECTURE.md` §12).
+- **Rationale:** Phase 0A requirement; avoids vendor coupling; aligns with zero-cost V1 (`COST_MODEL.md`).
+- **Status:** ACTIVE.
+
+## D-018 — Offline Gate Mode: bounded, fail-closed, security-first
+- **Decision:** Offline gate acceptance uses a minimal local cache (no PII), a short configurable acceptance window, monotonic/idempotent event queue, bounded cache/queue sizes, and server-authoritative conflict resolution. Default policy values (OFFLINE_ACCEPT_WINDOW=5m, CACHE_TTL=15m, Q sizes, ≤1 entry/token) are **configurable policy defaults**, not code constants; any change is change-controlled. In ambiguity, reject. Implemented only after online verification is stable (`ARCHITECTURE.md` §11).
+- **Rationale:** continuity with security intact; security always outranks convenience.
+- **Status:** ACTIVE.
+
+## D-019 — Accessibility target: WCAG 2.2 AA principles
+- **Decision:** Frontend targets WCAG 2.2 AA principles per `ACCESSIBILITY.md`. This is a development target/checklist; it is NOT a claim of formal WCAG certification or legal conformance.
+- **Rationale:** inclusive product; explicit non-claims avoid misleading certification language (§38).
+- **Status:** ACTIVE.
+
+## D-020 — Legal documents are DRAFTs requiring professional legal review
+- **Decision:** `docs/legal/*` (Privacy Policy, Terms of Service, Refund Policy, Parking Operator Agreement) are development drafts. Every file opens with "DRAFT — REQUIRES PROFESSIONAL LEGAL REVIEW"; they are not approved policies and are not presented as legal advice. Items of legal uncertainty are marked `[LEGAL REVIEW: ...]`.
+- **Rationale:** no invented guarantees or legal claims; consistent with `COMPLIANCE.md` §10.
+- **Status:** ACTIVE — drafts only; approval gated on counsel review before any real launch.
+
+## D-021 — Document verification lifecycle
+- **Decision:** `documents` rows follow `PENDING → UNDER_REVIEW → VERIFIED / REJECTED` (vocabulary aligned with operators/facilities). Operators upload; verifier/admin reviews with required note on reject; binary is deleted only after metadata soft-delete; retention follows `COMPLIANCE.md` §4. Only verified documents support operator/facility verification.
+- **Rationale:** verifiable trust chain for operator onboarding without Registry changes.
+- **Status:** ACTIVE.
+
 ---
 
 ## Change log of decisions (reverse chronological)
@@ -92,9 +117,16 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
 | 2026-08-30 | D-001..D-016 | Created (initial) | Session 1 | all | none (greenfield) |
+| 2026-08-30 | D-017 | Added — S3-compatible storage abstraction | Phase 0A (document storage) | storage, documents, operators | schema add (documents); MinIO in compose |
+| 2026-08-30 | D-018 | Added — Offline Gate Mode | Phase 0A (gate resilience) | gate, tokens, availability | none yet (design contract; Phase 6) |
+| 2026-08-30 | D-019 | Added — WCAG 2.2 AA target | Phase 0A (accessibility) | frontend | none |
+| 2026-08-30 | D-020 | Added — legal docs are drafts | Phase 0A (legal drafting) | docs/legal | none |
+| 2026-08-30 | D-021 | Added — document verification lifecycle | Phase 0A (verification) | documents, admin | schema add (documents) |
 
 ## Open decisions (deferred)
 - Real payment provider (Phase 11) — evaluate UPI providers; record in COMPLIANCE register first.
 - On-chain network for production (Level 3): L2 EVM candidate list.
 - Availability guarantee/liability model (Level 2, draft by counsel).
 - Retention windows final numbers (confirm with counsel before production).
+- Object-storage provider for Level 3 (S3 vs alternatives) — deferred; abstraction keeps it open.
+- Offline mode operator adoption policy (which facilities may enable offline acceptance) — Level 2.

@@ -297,6 +297,7 @@ Rules:
 - Multi-language: English, Marathi, Hindi (i18n for future languages).
 - Security: see `SECURITY.md`.
 - Compliance: privacy-forward, India DPDP-aware; see `COMPLIANCE.md`.
+- Accessibility: **WCAG 2.2 AA principles** as a development target — see `docs/ACCESSIBILITY.md`. (Not a claim of formal certification.)
 - Cost: V1 free/local/mock services where practical; see `COST_MODEL.md`.
 - Reliability: availability data honesty over fabricated liveness.
 

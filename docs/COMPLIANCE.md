@@ -26,6 +26,7 @@ Governance note: This document reflects design intent for privacy-forward operat
 | Reservation history | service delivery, dispute | Postgres | NO (hashed references) |
 | Payment meta (mock txn refs) | reconciliation | Postgres | NO (and no card data ever stored) |
 | IoT telemetry (occupancy) | availability engine | Postgres | NO |
+| Verification documents + parking images (operator identity/business docs) | onboarding, operator & facility verification | Object storage (private) + Postgres metadata | NO |
 | Audit logs (actor/entity snapshots) | security/accountability | Postgres | NO |
 | On-chain token lifecycle | verification/non-repudiation | EVM local chain | REFERENCE DATA ONLY (no PII) |
 
@@ -54,6 +55,7 @@ Governance note: This document reflects design intent for privacy-forward operat
 | Reservations/payments | business record: e.g., 1–3 years for reconciliation/legal (confirm) |
 | Sessions | derived from reservations |
 | Audit logs | 2 years (confirm; apolitical append-only archive) |
+| Verification documents | while operator/facility active + legal retention window after termination (confirm with counsel); images/facility-attachments per facility lifecycle |
 | IoT telemetry | 90 days raw; availability state kept |
 | Failed registrations | 30–60 days then purge legal bases |
 | Tokens/QR JWTs | until completion + small buffer |
@@ -83,7 +85,7 @@ Production: full DPDP request intake + ticketing, validated/de-identified disclo
 
 ## 7. Management of Availability Claims
 
-- The platform distinguishes LIVE / operator-reported / estimated / unknown at all times (see ARCHITECTURE.md §14, API_SPEC.md §3).
+- The platform distinguishes LIVE / operator-reported / estimated / unknown at all times (see ARCHITECTURE.md §4–5, API_SPEC.md §3).
 - No guarantee of availability unless the business actually supports it (V1 does not).
 - Before production: document responsibility split SmartPark / Operator / Data Provider / User (contractual + UI disclaimers) — do not invent liability rules; counsel drafts.
 
@@ -94,6 +96,7 @@ Production: full DPDP request intake + ticketing, validated/de-identified disclo
 | Vendor | Role | Data shared | Status |
 |---|---|---|---|
 | (self) Postgres | storage | all per inventory | local |
+| MinIO (local object storage, S3-compatible) | operator verification documents & parking images (private) | uploaded documents/images | local; prod switches to S3-compatible provider behind abstraction (`ARCHITECTURE.md` §12) |
 | Mock email/SMS adapter | notices | email/phone | no-op/mock in V1 |
 | Map (OSM or free provider) | display | coordinates only | TBD at Phase 3 choice |
 | Anvil (local chain) | token lifecycle | hashed refs only | local |
