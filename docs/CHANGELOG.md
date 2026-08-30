@@ -2,6 +2,19 @@
 
 Format: date — summary — refs. Chronological, newest last.
 
+## 2026-08-30 — Session 3 (Phase 1B — development infrastructure foundation)
+- **Added:**
+  - `docker-compose.yml` — postgres:16.4-alpine, MinIO (pinned release), anvil (foundry v1.7.1); pinned images, named volumes, real healthchecks (anvil via bash `/dev/tcp` `eth_chainId` round-trip since the image has no wget/curl), env overridable from `.env`.
+  - Backend DB + storage foundation (`backend/`): `db/migrations/0001_create_documents.sql` (verbatim `DATABASE.md` §2.23, standalone w/o FKs — added in Phase 2 alongside base tables), minimal transactional migration runner (`db/migrate.ts`, `schema_migrations`), lazy `pg` pool + `GET /ready` (503 when postgres down; `/health` stays dependency-free), provider-agnostic `ObjectStorageProvider` per `ARCHITECTURE.md` §12 (AWS SDK v3 `S3StorageProvider` for MinIO/S3), `scripts/check-infra.ts` (postgres/minio/anvil reachability), dotenv loading from repo-root `.env`.
+  - `iot/` workspace `@smartpark/iot` — occupancy vocabulary (`AVAILABLE/OCCUPIED/UNKNOWN`, reported `AVAILABLE/OCCUPIED/ERROR`), `OccupancySource` seam, real `ManualOccupancySource`; IoT remains optional per `IOT.md`.
+  - `contracts/` Foundry scaffold — `foundry.toml` (solc 0.8.27), `src/DevPlaceholder.sol`, dependency-free `test/DevPlaceholder.t.sol` (3 tests), `script/` README placeholder (forge-std deferred to contracts phase).
+  - Tooling: ESLint 9 flat config + `npm run lint`, Prettier 3 (`.prettierrc`, `.prettierignore`, `format`/`format:check`), CI `.github/workflows/ci.yml` (node gate: format:check→lint→typecheck→test→build; contracts job: forge build/test; no deploy/secrets).
+  - Root scripts: `infra:up/down/ps/logs`, `db:migrate`, `check:infra`; `.env.example` extended with `API_PORT`/`MINIO_*`/`ANVIL_*`/`POSTGRES_*`; `.gitignore` covers contracts artifacts.
+- **Decisions:** D-024 (pinned docker-compose dev infra), D-025 (SQL-file migrations + minimal runner), D-026 (storage per ARCHITECTURE §12, AWS SDK v3), D-027 (IoT seam in `iot/`, optional), D-028 (ESLint/Prettier gating), D-029 (CI: node gate + forge, no deploy/secrets).
+- **Verification (all run, all passed):** `npm install` (0 vulns) · `npm run lint` · `npm run format:check` · `npm run typecheck` · `npm test` (15/15: shared 3, api 9, iot 3) · `npm run build` · `docker compose config` (clean) · `docker compose up -d --wait` → postgres/minio/anvil all healthy · `npm run db:migrate` (applied; idempotent) · `npm run check:infra` → 3/3 PASS · `forge build` (solc 0.8.27) + `forge test` (3/3 pass) · compiled API: `GET /health` 200 JSON, `GET /ready` 200 `{"status":"ready","services":{"postgres":"ok"}}`, unknown route 404 JSON · `docker compose down` clean.
+- **Known issues:** esbuild postinstall blocked by npm allowScripts (carried over, non-fatal). Docker host quirk on this machine: engine reachable via the Windows-side `desktop-linux` context (npipe), not a WSL-mounted socket.
+- **Refs:** decisions D-024..D-029.
+
 ## 2026-08-30 — Session 2 (Phase 1A — workspace foundation)
 - **Added:** npm workspaces monorepo (root `package.json`, `.gitignore`, `.env.example`).
   - `frontend/` — React 18 + Vite 8 + TypeScript placeholder app (`SmartPark India / Pune MVP / Workspace Foundation`), responsive plain-CSS page.

@@ -1,9 +1,4 @@
-import {
-  APP_TAGLINE,
-  APP_VERSION,
-  MODE_STATUS,
-  MVP_STATUS,
-} from "@smartpark/shared";
+import { APP_TAGLINE, APP_VERSION, MODE_STATUS, MVP_STATUS } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 
 /**

@@ -5,17 +5,28 @@ import express, {
   type Response,
 } from "express";
 import { APP_NAME, APP_VERSION, ApiError, HealthResponse } from "@smartpark/shared";
+import { checkDatabaseConnection } from "./db.js";
+
+export interface CreateAppOptions {
+  /**
+   * Readiness probe for the database. Injectable so tests stay deterministic
+   * without a live postgres. Defaults to the real connection check.
+   */
+  checkDatabaseReady?: () => Promise<boolean>;
+}
 
 /**
  * Builds the Express application (no side effects — importable for tests).
- * Business logic is intentionally absent in Phase 1A (docs/ARCHITECTURE.md §3).
+ * Business logic is intentionally absent (docs/ARCHITECTURE.md §3).
  */
-export function createApp(): Express {
+export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
+  const checkDatabaseReady = options.checkDatabaseReady ?? checkDatabaseConnection;
 
   app.use(express.json());
 
-  // Health —— Phase 1A contract (docs/API_SPEC.md conventions).
+  // Health —— liveness contract (docs/API_SPEC.md). Deliberately independent
+  // of any dependency so load balancers can distinguish liveness from readiness.
   app.get("/health", (_req: Request, res: Response) => {
     const body: HealthResponse = {
       status: "ok",
@@ -24,6 +35,18 @@ export function createApp(): Express {
       timestamp: new Date().toISOString(),
     };
     res.json(body);
+  });
+
+  // Readiness —— dependency readiness (Phase 1B). Postgres is the only
+  // tracked dependency for now; minio/anvil are verified via
+  // `npm run check:infra` (scripts/check-infra.ts). 503 when not ready.
+  app.get("/ready", async (_req: Request, res: Response) => {
+    const postgresReady = await checkDatabaseReady();
+    const body = {
+      status: postgresReady ? "ready" : "not_ready",
+      services: { postgres: postgresReady ? "ok" : "unavailable" },
+    };
+    res.status(postgresReady ? 200 : 503).json(body);
   });
 
   // JSON 404 for unknown routes.
@@ -39,7 +62,7 @@ export function createApp(): Express {
     err: unknown,
     _req: Request,
     res: Response,
-    _next: unknown
+    _next: unknown,
   ) => {
     console.error("[api] unhandled error:", err);
     const body: ApiError = {

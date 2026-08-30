@@ -8,15 +8,22 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate": "tsx db/migrate.ts",
+    "check:infra": "tsx scripts/check-infra.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.637.0",
+    "@aws-sdk/s3-request-presigner": "^3.637.0",
     "@smartpark/shared": "*",
-    "express": "^4.22.2"
+    "dotenv": "^16.4.7",
+    "express": "^4.22.2",
+    "pg": "^8.12.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",
     "@types/node": "^20.14.0",
+    "@types/pg": "^8.11.6",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",
     "vitest": "^4.1.11"

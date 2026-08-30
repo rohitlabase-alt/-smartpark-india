@@ -1,0 +1,20 @@
+# dependencies / build output
+node_modules/
+**/dist/
+**/build/
+coverage/
+
+# lockfile stays hand-tended (npm)
+package-lock.json
+
+# environment
+.env
+.env.*
+
+# foundry artifacts
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# docs: markdown is authored by hand and intentionally excluded from auto-format
+docs/

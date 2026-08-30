@@ -120,6 +120,36 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** lightweight, audited, matches documented stack.
 - **Status:** ACTIVE.
 
+## D-024 — Local dev infrastructure via docker-compose (pinned images)
+- **Decision:** `docker-compose.yml` at repo root runs three services: `postgres` (16.4-alpine), `minio` (S3-compatible object storage, pinned release), `anvil` (dev-only local EVM chain, foundry `v1.7.1` matching local `forge`). Images are PINNED (no `latest`) for reproducibility; named volumes `postgres-data`/`minio-data` survive `docker compose down`; each service has a real healthcheck (anvil probed via a bash `/dev/tcp` JSON-RPC `eth_chainId` round-trip because the foundry image ships no wget/curl). Credentials default to local dev values overridable from `.env`; never for production (D-016, `COST_MODEL.md`).
+- **Rationale:** reproducible local stack referenced by `ROADMAP.md` Phase 1B gate "`docker-compose up` boots db+backend+frontend".
+- **Status:** ACTIVE — verified end-to-end (pull → up --wait → healthy → migrations → backend `/ready` → down).
+
+## D-025 — SQL-file migrations with a minimal transactional runner
+- **Decision:** Migrations are plain versioned SQL files in `backend/db/migrations/` (`NNNN_name.sql`); a tiny runner (`backend/db/migrate.ts`) applies them in filename order inside transactions and records versions in a `schema_migrations` table. No `node-pg-migrate` dependency. Matches `DATABASE.md` conventions ("Migrations as versioned SQL files in `backend/db/migrations/`"). FK constraints to `operators`/`parking_facilities`/`users` are intentionally deferred to Phase 2 migrations alongside those base tables (Phase 1B creates `documents` standalone).
+- **Rationale:** zero extra deps, transparent, idempotent; DB work (queries/entities) is a Phase 2 concern.
+- **Status:** ACTIVE.
+
+## D-026 — Object-storage scaffold exposes the ARCHITECTURE §12 interface
+- **Decision:** The Phase 1B storage abstraction implements the canonical `ObjectStorageProvider` from `ARCHITECTURE.md` §12.2 — `put`, `getObject`, `head`, `getSignedGetUrl`, `getSignedPutUrl?`, `delete` — which covers the required capability set (put/get/delete/signed URLs). Out-of-the-box adapter `S3StorageProvider` (AWS SDK v3) works with MinIO and any S3-compatible provider; force-path-style addressing for self-hosted/minio. Buckets stay private; access only via short-lived signed URLs (§12.5).
+- **Rationale:** architecture document is authoritative (same rule as D-022); avoids vendor coupling.
+- **Status:** ACTIVE.
+
+## D-027 — IoT foundation is a standalone `iot/` workspace, remains optional
+- **Decision:** Occupancy vocabulary (`AVAILABLE`/`OCCUPIED`/`UNKNOWN`; reported `AVAILABLE`/`OCCUPIED`/`ERROR`; device statuses `ONLINE`/`OFFLINE`/`STALE`/`ERROR`) and the ingestion seam `OccupancySource` live in `iot/` (npm workspace `@smartpark/iot`) per `IOT.md` §7. A real `ManualOccupancySource` proves the manual path; Sensor/Camera/Gate adapters implement the same interface later. IoT remains OPTIONAL (`IOT.md` hard rule).
+- **Rationale:** scaffolding the seam without making IoT mandatory; single source for the vocabulary used by the availability engine.
+- **Status:** ACTIVE.
+
+## D-028 — ESLint (flat) + Prettier, format gating
+- **Decision:** ESLint 9 flat config at repo root (`eslint.config.js`, typescript-eslint recommended + react-hooks) drives `npm run lint` (fails CI on any error). Prettier 3 (`.prettierrc` matching code style, `.prettierignore` excluding `docs/`, lockfile, build output) drives `npm run format` / `format:check`. `docs/**` is hand-authored and intentionally excluded from auto-format.
+- **Rationale:** single config for all workspaces; CI gate for consistent style; no doc churn.
+- **Status:** ACTIVE.
+
+## D-029 — CI: GitHub Actions free runners, single hard gate, no deploy/secrets
+- **Decision:** `.github/workflows/ci.yml` runs two jobs — `node` (`npm ci`, then `format:check` → `lint` → `typecheck` → `test` → `build`, running sequentially so any failure stops the gate) and `contracts` (`forge build` + `forge test --root contracts`). No deploy step, no secrets, no Docker services in CI (tests are DB-free). Docs/decisions workflow unchanged.
+- **Rationale:** D-016 (free runners, prototype ≠ production); costing and simplicity.
+- **Status:** ACTIVE.
+
 ---
 
 ## Change log of decisions (reverse chronological)
@@ -134,6 +164,12 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 | 2026-08-30 | D-021 | Added — document verification lifecycle | Phase 0A (verification) | documents, admin | schema add (documents) |
 | 2026-08-30 | D-022 | Added — workspace layout (frontend/ backend/ packages/shared; npm workspaces) | Phase 1A (foundation) | repo structure | none (new workspaces) |
 | 2026-08-30 | D-023 | Added — toolchain (Express4/tsx/TS5.9/Vite8/React18/Vitest4) | Phase 1A (foundation) | web, api, shared | none |
+| 2026-08-30 | D-024 | Added — docker-compose dev infra (postgres/minio/anvil, pinned) | Phase 1B (infrastructure) | docker-compose.yml, .env | compose stack |
+| 2026-08-30 | D-025 | Added — SQL-file migrations + minimal transactional runner | Phase 1B (DB foundation) | backend/db | runs on postgres |
+| 2026-08-30 | D-026 | Added — storage scaffold uses ARCHITECTURE §12 interface (AWS SDK v3) | Phase 1B (storage) | backend/src/storage | none |
+| 2026-08-30 | D-027 | Added — IoT seam + vocabulary in `iot/` workspace | Phase 1B (IoT foundation) | iot | none |
+| 2026-08-30 | D-028 | Added — ESLint flat + Prettier, format gating | Phase 1B (quality) | eslint.config.js, .prettierrc | none |
+| 2026-08-30 | D-029 | Added — CI workflow (node gate + forge), no deploy/secrets | Phase 1B (CI) | .github/workflows | none |
 
 ## Open decisions (deferred)
 - Real payment provider (Phase 11) — evaluate UPI providers; record in COMPLIANCE register first.

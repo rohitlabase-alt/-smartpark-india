@@ -14,7 +14,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve, reject) =>
-    server.close((err) => (err ? reject(err) : resolve()))
+    server.close((err) => (err ? reject(err) : resolve())),
   );
 });
 
