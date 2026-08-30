@@ -30,9 +30,11 @@ scripts/    Dev utilities + seeds
 | docs/BLOCKCHAIN.md | V1 contracts, no-PII-on-chain rule |
 | docs/SECURITY.md | Threat model + controls + per-feature checklist |
 | docs/COMPLIANCE.md | India DPDP-aware design (not legal advice) |
+| docs/ACCESSIBILITY.md | WCAG 2.2 AA development checklist (not a certification claim) |
 | docs/COST_MODEL.md | Zero-cost V1 baseline + decision rules |
 | docs/IOT.md | IoT-optional architecture + device security |
 | docs/DECISIONS.md | Decision log (change-controlled) |
+| docs/legal/* | Legal DRAFTs (privacy, ToS, refund, operator agreement) — require professional review, not approved |
 
 ## Guiding principles
 - IoT is optional; the platform works with manual availability updates alone.
