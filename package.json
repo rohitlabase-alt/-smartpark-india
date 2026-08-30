@@ -1,0 +1,23 @@
+{
+  "name": "smartpark-india",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "packages/shared"
+  ],
+  "scripts": {
+    "predev": "npm run build -w @smartpark/shared",
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @smartpark/api\" \"npm run dev -w @smartpark/web\"",
+    "dev:api": "npm run dev -w @smartpark/api",
+    "dev:web": "npm run dev -w @smartpark/web",
+    "build": "npm run build -w @smartpark/shared && npm run build -w @smartpark/api && npm run build -w @smartpark/web",
+    "test": "npm run test -w @smartpark/shared && npm run test -w @smartpark/api",
+    "typecheck": "npm run typecheck -w @smartpark/shared && npm run typecheck -w @smartpark/api && npm run typecheck -w @smartpark/web"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

@@ -2,6 +2,18 @@
 
 Format: date — summary — refs. Chronological, newest last.
 
+## 2026-08-30 — Session 2 (Phase 1A — workspace foundation)
+- **Added:** npm workspaces monorepo (root `package.json`, `.gitignore`, `.env.example`).
+  - `frontend/` — React 18 + Vite 8 + TypeScript placeholder app (`SmartPark India / Pune MVP / Workspace Foundation`), responsive plain-CSS page.
+  - `backend/` — Express 4 + TypeScript API foundation: `GET /health` (200 JSON), JSON 404 + central error middleware; no business logic, no DB dependency.
+  - `packages/shared` — `@smartpark/shared` constants + `HealthResponse`/`ApiError` contracts (consumed by web + api).
+  - Vitest 4 unit tests (shared 3, backend 3); run via root `npm test`.
+  - README workspace guide (install/dev/build/test).
+- **Toolchain decisions:** D-022 (documented `frontend/`/`backend/` layout + additive shared pkg over npm workspaces), D-023 (Express4/tsx/TS5.9/Vite8/React18/Vitest4; Tailwind deferred to Phase 3; latest stable majors → 0 `npm audit` vulnerabilities).
+- **Verification (all run, all passed):** `npm install` (0 vulns) · `npm run build` (shared+api+web green; web bundle 141 kB) · `npm run test` (6/6 pass) · `GET /health` on compiled server → 200 JSON · unknown route → 404 JSON · Vite dev server serves index page.
+- **Known issues:** esbuild postinstall blocked by npm allowScripts (non-fatal — platform binary from optional deps works; all builds/tests/dev verified).
+- **Refs:** decisions D-022, D-023.
+
 ## 2026-08-30 — Session 1b (Phase 0A — documentation completion)
 - **Added:**
   - `docs/legal/PRIVACY_POLICY_DRAFT.md`, `docs/legal/TERMS_OF_SERVICE_DRAFT.md`, `docs/legal/REFUND_POLICY_DRAFT.md`, `docs/legal/PARKING_OPERATOR_AGREEMENT_DRAFT.md` — all marked DRAFT — REQUIRES PROFESSIONAL LEGAL REVIEW; aligned with PRD/COMPLIANCE/payment/liability/operator models.

@@ -110,6 +110,16 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** verifiable trust chain for operator onboarding without Registry changes.
 - **Status:** ACTIVE.
 
+## D-022 — Workspace layout follows documented architecture (frontend/ backend/ shared)
+- **Decision:** Repository uses `frontend/` (React+Vite+TS web), `backend/` (Node+TS+Express API), and an additive `packages/shared` (@smartpark/shared) over npm workspaces. This follows the documented architecture (`docs/ARCHITECTURE.md` §3 module layout, Phase 1A branch of `docs/ROADMAP.md`), which is materially different from the bare `apps/web` + `services/api` template in the Phase 1A brief — the documented paths are authoritative (Phase 1A Step 2 rule). `packages/shared` is additive and does not conflict. No microservices; `contracts/`, `iot/`, `tests/`, `scripts/`, `.github/` scaffolded later when their phases start.
+- **Rationale:** consistency with existing docs; single developer; lightweight npm workspaces (no lerna/turbo/Nx).
+- **Status:** ACTIVE.
+
+## D-023 — Phase 1A toolchain
+- **Decision:** Express 4 (TS) for the API per `ARCHITECTURE.md` §3; `tsx` for dev/watch; TypeScript 5.9 (not TS 7 rewrite); Vite 8 + React 18 + `@vitejs/plugin-react` 6 for the web app; Vitest 4 for unit tests (backend + shared; frontend tests deferred); shared package consumed as compiled `dist/` (build-ordered). Latest stable majors chosen to pass `npm audit` (0 vulnerabilities). Tailwind CSS intentionally deferred to Phase 3 (real UI) to keep Phase 1A dependency-light.
+- **Rationale:** lightweight, audited, matches documented stack.
+- **Status:** ACTIVE.
+
 ---
 
 ## Change log of decisions (reverse chronological)
@@ -122,6 +132,8 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 | 2026-08-30 | D-019 | Added — WCAG 2.2 AA target | Phase 0A (accessibility) | frontend | none |
 | 2026-08-30 | D-020 | Added — legal docs are drafts | Phase 0A (legal drafting) | docs/legal | none |
 | 2026-08-30 | D-021 | Added — document verification lifecycle | Phase 0A (verification) | documents, admin | schema add (documents) |
+| 2026-08-30 | D-022 | Added — workspace layout (frontend/ backend/ packages/shared; npm workspaces) | Phase 1A (foundation) | repo structure | none (new workspaces) |
+| 2026-08-30 | D-023 | Added — toolchain (Express4/tsx/TS5.9/Vite8/React18/Vitest4) | Phase 1A (foundation) | web, api, shared | none |
 
 ## Open decisions (deferred)
 - Real payment provider (Phase 11) — evaluate UPI providers; record in COMPLIANCE register first.

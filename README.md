@@ -2,20 +2,39 @@
 
 Multi-city, **IoT-optional**, blockchain-enabled smart parking platform. Find → Compare → Reserve → Pay → Digital Token → Verify → Park → Exit.
 
-- **Current phase:** Phase 0 — product + architecture (documentation only). See `docs/ROADMAP.md`.
+- **Current phase:** Phase 1A — workspace foundation (see `docs/ROADMAP.md`).
 - **First city:** Pune, India (data-driven; designed for multi-city without code fork).
 
-## Repo layout (planned)
+## Repo layout
 ```
-frontend/   React + Vite + TypeScript + Tailwind (i18n EN/MR/HI)
-backend/    Node + TypeScript + Express (/api/v1, WebSocket, Availability Engine)
-contracts/  Solidity + Foundry (ParkingRegistryV1, ReservationV1, ParkingTokenV1)
-iot/        Device firmware + simulator (optional track)
-docs/       Product & engineering documentation (single source of truth)
-tests/      E2E / cross-stack tests
-scripts/    Dev utilities + seeds
-.github/    CI (lint → typecheck → tests → build → security checks)
+frontend/       React + Vite + TypeScript web app (placeholder in Phase 1A)
+backend/        Node + TypeScript + Express API (health endpoint in Phase 1A)
+packages/shared Shared TS constants/types/API contracts (@smartpark/shared)
+contracts/      (future) Solidity + Foundry contracts
+iot/            (future) Device firmware + simulator
+docs/           Product & engineering documentation (single source of truth)
+tests/          (future) E2E / cross-stack tests
+scripts/        (future) Dev utilities + seeds
+.github/        (future) CI (lint → typecheck → tests → build → security checks)
 ```
+
+## Workspace — getting started
+
+npm workspaces monorepo. Node >= 20.19 recommended (Node 22 used during setup).
+
+```bash
+npm install          # install all workspaces
+npm run dev          # builds shared, then runs API (:4000) + web (:5173) concurrently
+npm run dev:api      # API only (tsx watch)
+npm run dev:web      # web only (Vite)
+npm run build        # shared → api → web (tsc + vite)
+npm run test         # shared + api unit tests (vitest)
+npm run typecheck    # tsc --noEmit across all workspaces
+```
+
+- Web app: http://localhost:5173 — SmartPark India placeholder (Pune MVP / Workspace Foundation).
+- API: http://localhost:4000/health → `{"status":"ok",...}`. No database required in Phase 1A.
+- Environment placeholders: copy `.env.example` to `.env` as needed (real `.env` is git-ignored).
 
 ## Reading order for contributors
 `docs/PROJECT_STATE.md` → `docs/SESSION_HANDOFF.md` → `docs/DECISIONS.md` → `docs/ROADMAP.md`, then the relevant design doc.
@@ -44,8 +63,9 @@ scripts/    Dev utilities + seeds
 - Prototype ≠ MVP ≠ production — nothing untested is called done.
 
 ## Status
-- Phase 0 complete (2026-08-30): docs set delivered. No application code yet.
-- Next: Phase 1 workspace foundation.
+- Phase 0/0A complete (2026-08-30): full docs + legal drafts delivered.
+- Phase 1A complete (2026-08-30): workspace foundation — web app, API health endpoint, shared package, toolchain wired. No authentication or parking features yet.
+- Next: Phase 1B (foundation hardening — see `docs/SESSION_HANDOFF.md`).
 
 ## License
 See `LICENSE` when added (not yet added — pending decision).
