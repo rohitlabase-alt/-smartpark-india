@@ -1,8 +1,8 @@
 # SmartPark India — Database Design
 
 Status: DRAFT v0.1
-Last updated: 2026-08-30
-Phase: PHASE 0
+Last updated: 2026-08-31
+Phase: PHASE 0 (design); see "Implementation status" notes for what lands per phase
 
 PostgreSQL (V1: single database, modular schema; read-replicas are a Level 3 concern).
 
@@ -14,6 +14,8 @@ Conventions:
 - JSONB for flexible payloads (e.g., provider meta, availability snapshot) where relational modeling adds no value.
 
 > DECISION (recorded in DECISIONS.md): monetary values stored as `NUMERIC(12,2)` in INR in V1 for readability, with a code-level helper to avoid float drift. Revisit to integer paise if rounding disputes arise.
+
+**Implementation status (Phase 2B):** `parking_zones` (§2.7), `parking_slots` (§2.8) and `availability_state` (§2.20) are implemented by migration `0004_phase2b_availability_foundation.sql`. These tables use the **authoritative** vocabulary below — `parking_slots.status` is the six-state list, `availability_state.status` the four-state engine list. The Phase 2B brief's four-state slot list differs and is **superseded** by the documented §2.8 vocabulary. `availability_state` is written only with `source=MANUAL` in Phase 2B; the `RESERVATION / IOT / API` source values are permitted by the constraint so later phases can write without a schema migration. See `DECISIONS.md` D-033.
 
 ---
 

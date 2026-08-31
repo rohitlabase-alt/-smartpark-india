@@ -159,6 +159,10 @@ Implementation status:
 - Endpoints are defined now as the V1 contract.
 - Operationally they land with the **Operator onboarding + Admin verification work in Phase 2/6** (see `ROADMAP.md`); nothing in this spec asserts they already exist.
 
+Implementation status (Phase 2B — parking slots + manual availability):
+- `POST /operators/me/facilities/{id}/slots` (add slot) and `GET /operators/me/facilities/{id}/slots` (list own facility's slots) are **implemented**. Slot status is changed via `PATCH /operators/me/facilities/{id}/slots/{slotId}` (body: `status`/`vehicleType`/`reservationsEnabled`); this is the Phase 2B **manual availability** write (writes `source=MANUAL` to `availability_state`). The spec's separate `PATCH /operators/me/slots/{id}/availability` is deferred — the slot-status resource is the manual write path for now (see `DECISIONS.md` D-033). Written by `PARKING_OPERATOR` with server-side ownership checks (403 IDOR).
+- `GET /parking/{facilityId}/availability` (§3) is **implemented** and served deterministically from `availability_state` (only active/verified facilities). In Phase 2B `sources` is always `["MANUAL"]` (or `[]` when no data), `confidence` HIGH while data exists else LOW, and `isLive` true only when data exists and confidence HIGH; the multi-source freshness-window policy ships with the availability-engine phase.
+
 ### iot
 | method | path | role | description |
 |---|---|---|---|

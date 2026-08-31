@@ -8,5 +8,10 @@ export default defineConfig({
     setupFiles: ["./test/setup.ts"],
     testTimeout: 15_000,
     hookTimeout: 30_000,
+    // Multiple DB-backed integration suites (auth-parking, availability) each
+    // drop & recreate the same `smartpark_test` database in beforeAll/afterAll.
+    // Run test files serially so parallel workers never clobber one another's
+    // database.
+    fileParallelism: false,
   },
 });

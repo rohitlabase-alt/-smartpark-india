@@ -166,12 +166,19 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** the user-facing requirement that authentication/RBAC/parking behavior is genuinely DB-backed (unique constraints, FK integrity, sessions, real argon2) and migrations apply in CI (`DATABASE.md` §5). Integration tests fail loudly with a "run `npm run infra:up`" signal when no postgres is present locally.
 - **Status:** ACTIVE.
 
+## D-033 — Phase 2B slots + manual availability foundation (engine output cache, MANUAL source)
+- **Decision:** Add the availability foundation on top of Phase 2A: migration `0004` creates `parking_zones` (`DATABASE.md` §2.7), `parking_slots` (§2.8, authoritative `AVAILABLE/RESERVED/OCCUPIED/OUT_OF_SERVICE/MAINTENANCE/UNKNOWN` vocabulary in a CHECK, globally-unique `slot_code`) and `availability_state` (§2.20 — the normalized output cache the API serves with status/source/confidence CHECKs and a partial unique on `slot_id`). `parking_slots.status` is the source of truth for slot state; the engine cache is derived offline from it. The **manual write path** (operator sets a slot's status → slot table + availability_state upserted together in one transaction, `source=MANUAL`, `confidence=HIGH`) is the only Phase 2B write; a slot created defaults to `AVAILABLE` and seeds its engine row. `availability_state` status uses the four-state vocabulary (`AVAILABLE/OCCUPIED/RESERVED/UNKNOWN`) while the slot table uses the six-state one — the documented difference from the Phase 2B brief's four-state list is resolved in favour of the docs' `parking_slots` vocabulary. Public read `GET /parking/:facilityId/availability` (`API_SPEC.md` §3) serves `totalSlots/availableSlots/isLive/sources/lastUpdatedAt/confidence/disclaimer/slots` deterministically from DB state; non-available operational slots report `UNKNOWN` engine state. `isLive` true only when data exists and confidence HIGH (single-source MANUAL); freshness-window/multi-source policy lands with the availability-engine phase.
+- **Deferred (Phase 2C+):** bookings/reservations, tokens/payments, maps/geolocation, IoT ingestion, blockchain, offline gate mode, dashboards, gate staff, notifications, deployment — explicitly NOT implemented here.
+- **Rationale:** slots are required before any availability; the `availability_state` output cache decouples the public read from slot writes so later engine sources (IoT/API/reservation) feed one pipeline without API churn; authoritative vocabulary from `DATABASE.md` wins over the brief's four-state list.
+- **Status:** ACTIVE — verified end-to-end (migration 0004 applied + idempotent on dev DB and CI; 23 new DB-backed API tests; all 65 api tests pass).
+
 ---
 
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
+| 2026-08-31 | D-033 | Added — slots + manual availability foundation (engine output cache, MANUAL source) | Phase 2B (availability) | parking (slots), availability | new tables (parking_zones, parking_slots, availability_state) |
 | 2026-08-30 | D-030 | Added — access/refresh session foundation (JWT HS256 + SHA-256 refresh, rotation/revocation) | Phase 2A (auth) | auth, refresh_tokens | new table (refresh_tokens) |
 | 2026-08-30 | D-031 | Added — argon2id hashing + Phase 2A tables + documents FK wiring | Phase 2A (auth+parking foundation) | auth, operators, parking, documents | new (0002); FK add (0003) |
 | 2026-08-30 | D-032 | Added — DB-backed tests on throwaway `smartpark_test` + postgres service in CI | Phase 2A (quality/CI) | api tests, ci.yml | none (migrations in CI stage) |

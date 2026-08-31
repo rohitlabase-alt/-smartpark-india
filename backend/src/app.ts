@@ -3,6 +3,8 @@ import { APP_NAME, APP_VERSION, HealthResponse } from "@smartpark/shared";
 import { checkDatabaseConnection } from "./db.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { operatorsRouter } from "./modules/operators/operators.routes.js";
+import { parkingRouter } from "./modules/availability/availability.routes.js";
+import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
 import { errorHandler, notFoundHandler } from "./http/error-handler.js";
 
 export interface CreateAppOptions {
@@ -52,6 +54,13 @@ export function createApp(options: CreateAppOptions = {}): Express {
   // Versioned API namespace (docs/API_SPEC.md base path /api/v1).
   app.use("/api/v1/auth", authRouter);
   app.use("/api/v1/operators", operatorsRouter);
+
+  // Operator-owned slot management (Phase 2B): /operators/me/facilities/:id/slots
+  const slotsRouter = buildSlotsRouter();
+  app.use("/api/v1/operators/me/facilities", slotsRouter);
+
+  // Public parking availability (Phase 2B): /parking/:id/availability
+  app.use("/api/v1/parking", parkingRouter);
 
   // JSON 404 for unknown routes.
   app.use(notFoundHandler);

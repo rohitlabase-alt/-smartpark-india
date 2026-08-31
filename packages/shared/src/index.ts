@@ -217,3 +217,94 @@ export interface UpdateFacilityRequest {
   capacity?: number;
   isActive?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Parking slots & availability (docs/DATABASE.md §2.8/§2.20, docs/API_SPEC.md)
+// ---------------------------------------------------------------------------
+
+/** Authoritative slot status vocabulary (docs/DATABASE.md §2.8). */
+export const PARKING_SLOT_STATUSES = [
+  "AVAILABLE",
+  "RESERVED",
+  "OCCUPIED",
+  "OUT_OF_SERVICE",
+  "MAINTENANCE",
+  "UNKNOWN",
+] as const;
+export type ParkingSlotStatus = (typeof PARKING_SLOT_STATUSES)[number];
+
+/** Normalized engine status vocabulary (docs/DATABASE.md §2.20). */
+export const AVAILABILITY_STATES = ["AVAILABLE", "OCCUPIED", "RESERVED", "UNKNOWN"] as const;
+export type AvailabilityState = (typeof AVAILABILITY_STATES)[number];
+
+/** Availability source vocabulary (docs/DATABASE.md §2.20). Phase 2B writes MANUAL only. */
+export const AVAILABILITY_SOURCES = ["MANUAL", "API", "IOT", "RESERVATION"] as const;
+export type AvailabilitySource = (typeof AVAILABILITY_SOURCES)[number];
+
+/** Availability confidence vocabulary (docs/DATABASE.md §2.20). */
+export const AVAILABILITY_CONFIDENCES = [
+  "HIGH",
+  "MEDIUM_HIGH",
+  "MEDIUM",
+  "LOW",
+  "UNKNOWN",
+] as const;
+export type AvailabilityConfidence = (typeof AVAILABILITY_CONFIDENCES)[number];
+
+export interface ParkingSlot {
+  id: number;
+  slotCode: string;
+  facilityId: number;
+  zoneId: number | null;
+  vehicleType: string;
+  status: ParkingSlotStatus;
+  reservationsEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Availability summary derived deterministically from slot/engine state
+ * (docs/API_SPEC.md §3 + a per-status breakdown). `isLive` is derived from
+ * confidence/freshness; Phase 2B always reports MANUAL source.
+ */
+export interface AvailabilitySummary {
+  facilityId: string;
+  total: number;
+  available: number;
+  occupied: number;
+  reserved: number;
+  outOfService: number;
+  maintenance: number;
+  unknown: number;
+  isLive: boolean;
+  confidence: AvailabilityConfidence;
+  lastUpdatedAt: string;
+  source: AvailabilitySource;
+}
+
+/** Public availability read (docs/API_SPEC.md §3) — the full honesty contract. */
+export interface FacilityAvailabilityResponse {
+  facilityId: string;
+  totalSlots: number;
+  availableSlots: number;
+  isLive: boolean;
+  sources: AvailabilitySource[];
+  lastUpdatedAt: string;
+  confidence: AvailabilityConfidence;
+  disclaimer: string;
+  slots: ParkingSlot[];
+}
+
+export interface CreateSlotRequest {
+  slotCode: string;
+  vehicleType?: string;
+  status?: ParkingSlotStatus;
+  reservationsEnabled?: boolean;
+}
+
+export interface UpdateSlotRequest {
+  vehicleType?: string;
+  status?: ParkingSlotStatus;
+  reservationsEnabled?: boolean;
+}
