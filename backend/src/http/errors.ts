@@ -39,3 +39,8 @@ export function notFound(code = "NOT_FOUND", message = "Resource not found"): Ht
 export function conflict(code: string, message: string): HttpError {
   return new HttpError(409, code, message);
 }
+
+/** 422 Unprocessable — valid request but invalid current state (API_SPEC §1). */
+export function unprocessable(code: string, message: string): HttpError {
+  return new HttpError(422, code, message);
+}

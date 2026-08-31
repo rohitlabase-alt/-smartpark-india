@@ -90,6 +90,8 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 | POST | /reservations/{code}/cancel | user | cancel (refund path in mock) |
 | GET | /reservations/{code} | user/operator/admin | detail |
 
+> **Implementation status (Phase 2C — booking foundation):** `GET /reservations`, `POST /reservations`, `GET /reservations/{code}`, and `POST /reservations/{code}/cancel` are **implemented** (mounted at `/api/v1/reservations`, user-authenticated, ownership enforced server-side — a user may list/detail/cancel only their own bookings, 404 `BOOKING_NOT_FOUND` on anyone else's). There is **no payment step in Phase 2C**: creation immediately produces a `CONFIRMED` booking (no `PENDING_PAYMENT`, no `confirm` endpoint) and does **not** mint tokens/QR codes. The non-payment lifecycle is `CONFIRMED → CANCELLED | COMPLETED`; `POST /reservations/{code}/confirm`, tokens, and the remaining states (`ACTIVE`/`EXPIRED`/`FAILED`) are deferred to the payments/tokens phase. Double-booking is enforced by the DB-level btree_gist exclusion constraint on `(slot_id, [starts_at, ends_at))` for `CONFIRMED` → `409 RESERVATION_CONFLICT`.
+
 ### tokens
 | method | path | role | description |
 |---|---|---|---|

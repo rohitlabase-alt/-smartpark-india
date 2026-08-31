@@ -229,6 +229,8 @@ A "category" booking (e.g., "any 4-wheeler slot") is modeled by grouping slots; 
 
 Constraint: no overlapping CONFIRMED/ACTIVE reservations on the same slot → enforce via **exclusion constraint** (btree_gist) on `slot_id, [starts_at, ends_at)` `WHERE state IN ('CONFIRMED','ACTIVE')`. This is the primary double-booking guard.
 
+> **Phase 2C implementation (migration `0005`, D-034):** the table is created with the columns above **minus `vehicle_id`** (no `vehicles` table exists yet) and **minus** `amount`/`payment_status` inputs (present but unused in Phase 2C). The `state` CHECK is constrained to the non-payment subset `('CONFIRMED','CANCELLED','COMPLETED')`; payment/gate states (`PENDING_PAYMENT`/`ACTIVE`/`EXPIRED`/`FAILED`) and `amount`/`payment_status` become active with the payments phase. A created booking is immediately `CONFIRMED` (no payment step) with `confirmed_at` set. The live exclusion constraint currently covers `WHERE state = 'CONFIRMED'`; `'ACTIVE'` is added to the predicate when ACTIVE bookings land.
+
 ### 2.13 parking_sessions
 
 | column | type | notes |

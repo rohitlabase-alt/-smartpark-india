@@ -172,12 +172,19 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** slots are required before any availability; the `availability_state` output cache decouples the public read from slot writes so later engine sources (IoT/API/reservation) feed one pipeline without API churn; authoritative vocabulary from `DATABASE.md` wins over the brief's four-state list.
 - **Status:** ACTIVE — verified end-to-end (migration 0004 applied + idempotent on dev DB and CI; 23 new DB-backed API tests; all 65 api tests pass).
 
+## D-034 — Phase 2C booking/reservation foundation (non-payment subset, immediate CONFIRMED)
+- **Decision:** Add the reservation foundation on top of Phase 2B: migration `0005` creates `reservations` (`DATABASE.md` §2.12) on a **non-payment subset**. The `state` CHECK is limited to `CONFIRMED/CANCELLED/COMPLETED` (the §2.12 payment/gate states — `PENDING_PAYMENT`/`ACTIVE`/`EXPIRED`/`FAILED` — land with the payments phase); `amount`/`payment_status` columns exist but are nullable/unused; `vehicle_id` is omitted (no `vehicles` table exists). Because there is **no payment step**, creation immediately inserts a `CONFIRMED` booking (with `confirmed_at`) and does **not** mint tokens/QR codes; the `confirm` endpoint is deferred. The btree_gist exclusion constraint `reservations_no_overlap` on `(slot_id, [starts_at, ends_at))` currently covers `WHERE state = 'CONFIRMED'` and is the primary, race-safe double-booking guard — the authority on overlap, never app memory alone; `'ACTIVE'` is added to the predicate when ACTIVE bookings land. Slot-existence/facility-membership/time validation happens in-request; the app validates slot bookability (allow `AVAILABLE`/`RESERVED`, reject `OCCUPIED`/`OUT_OF_SERVICE`/`MAINTENANCE`/`UNKNOWN`) and `reservations_enabled`, but does **not** flip `parking_slots.status` to `RESERVED` (manual availability stays authoritative). Ownership is enforced server-side (a user may list/detail/cancel only their own bookings; anyone else's → 404, no enumeration).
+- **Deferred (payments/tokens phase):** the `confirm` endpoint, payments/refunds, parking tokens, QR codes, gate entry, and the payment/gate reservation states (`PENDING_PAYMENT`/`ACTIVE`/`EXPIRED`/`FAILED`).
+- **Rationale:** reservations need to exist before any paid flow; the DB-level exclusion constraint (D-007) is the documented correctness guard; keeping `parking_slots.status` authoritative avoids a silent availability flip; ownership enforced server-side satisfies the IDOR requirement (§5).
+- **Status:** ACTIVE — verified end-to-end (migration 0005 applied + idempotent on dev DB and CI; 18 new DB-backed API tests; all 89 api tests pass).
+
 ---
 
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
+| 2026-08-31 | D-034 | Added — Phase 2C booking foundation (non-payment subset, immediate CONFIRMED) | Phase 2C (reservations/booking) | bookings, reservations, shared | new table (reservations) + btree_gist exclusion |
 | 2026-08-31 | D-033 | Added — slots + manual availability foundation (engine output cache, MANUAL source) | Phase 2B (availability) | parking (slots), availability | new tables (parking_zones, parking_slots, availability_state) |
 | 2026-08-30 | D-030 | Added — access/refresh session foundation (JWT HS256 + SHA-256 refresh, rotation/revocation) | Phase 2A (auth) | auth, refresh_tokens | new table (refresh_tokens) |
 | 2026-08-30 | D-031 | Added — argon2id hashing + Phase 2A tables + documents FK wiring | Phase 2A (auth+parking foundation) | auth, operators, parking, documents | new (0002); FK add (0003) |

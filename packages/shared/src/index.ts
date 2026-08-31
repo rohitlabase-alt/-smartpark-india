@@ -308,3 +308,50 @@ export interface UpdateSlotRequest {
   status?: ParkingSlotStatus;
   reservationsEnabled?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Bookings / reservations (docs/DATABASE.md §2.12, docs/API_SPEC.md §2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Reservation lifecycle (docs/DATABASE.md §2.12). Phase 2C implements only the
+ * non-payment subset CONFIRMED/CANCELLED/COMPLETED; the payment/gate states
+ * (PENDING_PAYMENT/ACTIVE/EXPIRED/FAILED) land with the payment/token phases.
+ */
+export const RESERVATION_STATES = ["CONFIRMED", "CANCELLED", "COMPLETED"] as const;
+export type ReservationState = (typeof RESERVATION_STATES)[number];
+
+/** Product-facing alias for a reservation's state (Phase 2C). */
+export type BookingStatus = ReservationState;
+
+export interface Reservation {
+  id: number;
+  reservationCode: string;
+  userId: number;
+  facilityId: number;
+  zoneId: number | null;
+  slotId: number | null;
+  startsAt: string;
+  endsAt: string;
+  state: ReservationState;
+  cancelReason: string | null;
+  cancelledAt: string | null;
+  confirmedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateBookingRequest {
+  facilityId: number;
+  slotId?: number;
+  startsAt: string;
+  endsAt: string;
+}
+
+export interface BookingResponse {
+  reservation: Reservation;
+}
+
+export interface BookingListResponse {
+  reservations: Reservation[];
+}

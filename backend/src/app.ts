@@ -5,6 +5,7 @@ import { authRouter } from "./modules/auth/auth.routes.js";
 import { operatorsRouter } from "./modules/operators/operators.routes.js";
 import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
+import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
 import { errorHandler, notFoundHandler } from "./http/error-handler.js";
 
 export interface CreateAppOptions {
@@ -61,6 +62,9 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   // Public parking availability (Phase 2B): /parking/:id/availability
   app.use("/api/v1/parking", parkingRouter);
+
+  // Reservations / bookings (Phase 2C): /reservations (auth required)
+  app.use("/api/v1/reservations", reservationsRouter);
 
   // JSON 404 for unknown routes.
   app.use(notFoundHandler);
