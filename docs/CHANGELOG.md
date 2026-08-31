@@ -2,6 +2,21 @@
 
 Format: date — summary — refs. Chronological, newest last.
 
+## 2026-08-31 — Session 4 (Phase 2A — authentication, RBAC, user + parking foundation)
+- **Added (backend `modules/` per ARCHITECTURE §3):**
+  - Auth foundation: `auth/` module — argon2id password hashing (`@node-rs/argon2`, prebuilt binaries, no install-script friction), JWT HS256 access tokens (`jose`, pinned alg/iss/aud, minimal payload, 30-min default), opaque refresh tokens stored as SHA-256 digests (`refresh_tokens`), roles DB-backed per request. Endpoints: `POST /auth/register|login|refresh|logout`, `GET /auth/me` (`API_SPEC.md` §2 auth); password-reset and httpOnly-cookie refresh transport deliberately deferred (need email + frontend).
+  - RBAC: `requireAuth` + `requireRole` middleware (server-side only), zod validation middleware (`VALIDATION_ERROR` 400 + flattened issues), centralized `HttpError` + `errorHandler` (incl. `INVALID_JSON` for malformed bodies). Roles `USER`/`PARKING_OPERATOR`/`ADMIN` seeded (realized subset of §2.2 catalogue).
+  - Operators: `POST /operators/register` (self-serve, org → PENDING, grants PARKING_OPERATOR; 409 on duplicate owner), `GET /operators/me`. Facilities: `GET|POST /operators/me/facilities`, `PATCH /operators/me/facilities/:id` — generated public ids (`PUN-000007`), ownership enforced (403 IDOR), strict zod schemas (unknown keys rejected).
+  - Cross-cutting: `asyncHandler`, request types (`AuthContext`), config for `JWT_SECRET`/`JWT_EXPIRES_IN`/`REFRESH_TOKEN_EXPIRES_IN`, `db.ts` `withTransaction`, `migrate.ts` exposes `runMigrations()`.
+- **Database:** migration `0002` (citext `users`, `roles`+seeds, `operators`, `parking_facilities`, `user_roles`, `refresh_tokens`, `parking_id_seq`) and `0003` (wires the FKs Phase 1B `documents` deferred: operator/parking/uploaded_by/reviewed_by, ON DELETE RESTRICT). `packages/shared` gains public contracts (`PublicUser`, `Operator`, `ParkingFacility`, auth request/response types, role/status unions).
+- **Tests (42 api, DB-backed on throwaway `smartpark_test`):** register (success/shape/duplicate 409/validation/invalid JSON/argon2 salt check), login (success/wrong-pw 401/no-enumeration/suspended 401), `/auth/me` (401s/200/suspended 403/soft-deleted 401), refresh rotation + replay rejection + expiry + logout revocation + IDOR, operators RBAC (403/401/401→201/409), facilities CRUD + ownership (403), documents FK integrity (23503). Health/ready/storage tests stay dependency-free.
+- **CI:** `ci.yml` node job gains a `postgres:16.4-alpine` service and `npm run db:migrate` stage; API tests run against `smartpark_test` (supersedes D-029's "tests DB-free").
+- **Docs:** DECISIONS D-030..D-032 (+ change log rows); README (phase/endpoints/JWT_SECRET note); PROJECT_STATE / SESSION_HANDOFF rewritten for Phase 2A.
+- **Decisions:** D-030 (JWT + SHA-256 refresh foundation), D-031 (argon2id + Phase 2A tables + documents FK wiring), D-032 (DB-backed tests on `smartpark_test` + CI postgres service).
+- **Verification (all run, all passed):** `npm install` (0 vulns) · `npm run lint` · `npm run format:check` · `npm run typecheck` (all 4 workspaces) · `npm test` (shared 3 + api 42 + iot 3 = 48) · `npm run build` · `docker compose up -d --wait` (all healthy) · `npm run db:migrate` (real dev DB: applied 0002, 0003; idempotent) · `npm run check:infra` · live compiled API: `GET /health` 200, `GET /ready` 200.
+- **Known issues:** esbuild postinstall still blocked by npm allowScripts (non-fatal). Docker host quirk unchanged (engine via Windows-side `desktop-linux` context). `npm run test` on the API now requires postgres (`npm run infra:up`) — fails loudly otherwise by design.
+- **Refs:** decisions D-030..D-032.
+
 ## 2026-08-30 — Session 3 (Phase 1B — development infrastructure foundation)
 - **Added:**
   - `docker-compose.yml` — postgres:16.4-alpine, MinIO (pinned release), anvil (foundry v1.7.1); pinned images, named volumes, real healthchecks (anvil via bash `/dev/tcp` `eth_chainId` round-trip since the image has no wget/curl), env overridable from `.env`.

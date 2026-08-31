@@ -150,12 +150,31 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 - **Rationale:** D-016 (free runners, prototype ≠ production); costing and simplicity.
 - **Status:** ACTIVE.
 
+## D-030 — Access/refresh session foundation (JWT HS256 + SHA-256 refresh at rest)
+- **Decision:** Access tokens are short-lived JWTs signed HS256 via `jose` (alg pinned, minimal payload: `sub` only + `iss`/`aud`/`iat`/`exp`; issuer "SmartPark India API", audience `/api/v1`). Refresh tokens are 32-byte random opaque strings persisted as SHA-256 digests in a new `refresh_tokens` table; every use **rotates** (old row marked `revoked_at`/`replaced_at` — replay-safe) and any session is revocable via `/auth/logout`. Key material comes solely from `JWT_SECRET` env; auth fails closed (500 `AUTH_CONFIG_ERROR`) while it is unset.
+- **Rationale:** `SECURITY.md` §6 (30-min access, `alg` pinned, minimal payload, random refresh hashed at rest, rotated, revocable) and `API_SPEC.md` §6. `refresh_tokens` is a schema add — `DATABASE.md` still has no auth-session table; recorded here (open item to upstream into DATABASE.md).
+- **Scope:** `POST /auth/register|login|refresh|logout`, `GET /auth/me`. Password reset/forgot (needs email delivery) and httpOnly-cookie refresh transport (needs frontend) are deliberately deferred — logged in the document and CHANGELOG.
+- **Status:** ACTIVE.
+
+## D-031 — Argon2id password hashing; Phase 2A tables + documents FK wiring
+- **Decision:** Passwords hashed argon2id via `@node-rs/argon2` (memory 19 MiB, iterations 2, parallelism 1 — self-describing `$argon2id$` strings; meets SECURITY.md "argon2id (or bcrypt 12+)"). Chosen for its prebuilt platform binaries — works under the repo's npm `allowScripts` restriction (no postinstall). Migration `0002` adds `users`/`roles`(+USER, PARKING_OPERATOR, ADMIN seeds)/`operators`/`parking_facilities`/`user_roles` per `DATABASE.md` §2 plus `refresh_tokens`; `parking_id_seq` drives public ids like `PUN-000007`. One operator org per owner account (UNIQUE `owner_user_id` — /operators/me semantics). Migration `0003` finally wires the FKs Phase 1B `documents` deferred (operator/parking/uploaded_by/reviewed_by, `ON DELETE RESTRICT` per §2.23).
+- **Rationale:** fulfils `DATABASE.md` §2/§5 and D-025's deferral contract; geospatial index intentionally deferred (DATABASE.md allows "or PostGIS if installed").
+- **Status:** ACTIVE — verified end-to-end (migrations 0002/0003 applied on dev DB and CI; docs + users live via API).
+
+## D-032 — DB-backed automated tests on a throwaway `smartpark_test` database
+- **Decision:** Phase 2A API tests are integration tests against real postgres (`smartpark_test`, recreated + migrated in `beforeAll`, dropped in `afterAll`; vitest `setup.ts` points the app at it and provides a test-only `JWT_SECRET`). CI gains a `postgres:16.4-alpine` service and a `npm run db:migrate` stage (supersedes D-029's "tests are DB-free"). Everything else (health/ready/storage contracts) stays dependency-free.
+- **Rationale:** the user-facing requirement that authentication/RBAC/parking behavior is genuinely DB-backed (unique constraints, FK integrity, sessions, real argon2) and migrations apply in CI (`DATABASE.md` §5). Integration tests fail loudly with a "run `npm run infra:up`" signal when no postgres is present locally.
+- **Status:** ACTIVE.
+
 ---
 
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
+| 2026-08-30 | D-030 | Added — access/refresh session foundation (JWT HS256 + SHA-256 refresh, rotation/revocation) | Phase 2A (auth) | auth, refresh_tokens | new table (refresh_tokens) |
+| 2026-08-30 | D-031 | Added — argon2id hashing + Phase 2A tables + documents FK wiring | Phase 2A (auth+parking foundation) | auth, operators, parking, documents | new (0002); FK add (0003) |
+| 2026-08-30 | D-032 | Added — DB-backed tests on throwaway `smartpark_test` + postgres service in CI | Phase 2A (quality/CI) | api tests, ci.yml | none (migrations in CI stage) |
 | 2026-08-30 | D-001..D-016 | Created (initial) | Session 1 | all | none (greenfield) |
 | 2026-08-30 | D-017 | Added — S3-compatible storage abstraction | Phase 0A (document storage) | storage, documents, operators | schema add (documents); MinIO in compose |
 | 2026-08-30 | D-018 | Added — Offline Gate Mode | Phase 0A (gate resilience) | gate, tokens, availability | none yet (design contract; Phase 6) |

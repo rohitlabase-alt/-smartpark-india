@@ -7,7 +7,7 @@
  *
  * Full query/entity code lands in Phase 2 (docs/DATABASE.md).
  */
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { config } from "./config.js";
 
 let pool: Pool | undefined;
@@ -50,5 +50,25 @@ export async function closeDb(): Promise<void> {
   if (pool) {
     await pool.end();
     pool = undefined;
+  }
+}
+
+/**
+ * Runs `fn` inside a single transaction (BEGIN/COMMIT, ROLLBACK on error).
+ * Useful for multi-statement operations that must be atomic (e.g. creating a
+ * user + role assignment + first refresh token).
+ */
+export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 }

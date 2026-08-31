@@ -2,14 +2,14 @@
 
 Multi-city, **IoT-optional**, blockchain-enabled smart parking platform. Find → Compare → Reserve → Pay → Digital Token → Verify → Park → Exit.
 
-- **Current phase:** Phase 1B — development infrastructure foundation (see `docs/ROADMAP.md`).
+- **Current phase:** Phase 2A — authentication, RBAC, user + parking foundation (see `docs/ROADMAP.md`).
 - **First city:** Pune, India (data-driven; designed for multi-city without code fork).
 
 ## Repo layout
 
 ```
 frontend/       React + Vite + TypeScript web app (placeholder app so far)
-backend/        Node + TypeScript + Express API (foundation: health/ready, storage, migrations)
+backend/        Node + TypeScript + Express API (health/ready, auth+RBAC, operators, parking facilities)
 packages/shared Shared TS constants/types/API contracts (@smartpark/shared)
 contracts/      Solidity + Foundry contracts (toolchain scaffold; anvil dev chain)
 iot/            Occupancy vocabulary + source seam (IoT optional) (@smartpark/iot)
@@ -32,7 +32,7 @@ npm run dev            # builds shared, then runs API (:4000) + web (:5173) conc
 npm run dev:api        # API only (tsx watch)
 npm run dev:web        # web only (Vite)
 npm run build          # shared → api → web → iot (tsc + vite)
-npm run test           # unit tests across workspaces (vitest; 15 so far)
+npm run test           # tests across workspaces (vitest; api tests are DB-backed on smartpark_test)
 npm run typecheck      # tsc --noEmit across all workspaces
 npm run lint           # ESLint 9 (flat config) — CI-gated
 npm run format         # Prettier --write
@@ -42,6 +42,8 @@ npm run format:check   # Prettier --check — CI-gated
 - Web app: http://localhost:5173 — SmartPark India placeholder (Pune MVP / Workspace Foundation).
 - API: http://localhost:4000/health → `{"status":"ok",...}` (liveness, no dependencies).
 - API: http://localhost:4000/ready → `{"status":"ready","services":{...}}` (postgres-backed readiness; 503 when down).
+- API v1 (Phase 2A): `POST /api/v1/auth/register|login|refresh|logout`, `GET /api/v1/auth/me`, `POST /api/v1/operators/register`, `GET /api/v1/operators/me`, `GET|POST /api/v1/operators/me/facilities`, `PATCH /api/v1/operators/me/facilities/:id`. Auth = `Authorization: Bearer <accessToken>` (RBAC enforced server-side).
+- Auth env: set `JWT_SECRET` (e.g. `openssl rand -base64 48`), `JWT_EXPIRES_IN` (default 30m), `REFRESH_TOKEN_EXPIRES_IN` (default 30d) in `.env`. Auth operations fail closed while `JWT_SECRET` is unset.
 - Contracts: `forge build` / `forge test` from the repo root (`--root contracts` used by CI).
 - Environment: copy `.env.example` to `.env` and adjust (ports/creds). Real `.env` is git-ignored; dev credentials in `.env.example` are local-only.
 - Infra teardown: `npm run infra:down` (keeps data in named volumes), `npm run infra:logs` / `infra:ps`.
@@ -79,8 +81,9 @@ npm run format:check   # Prettier --check — CI-gated
 
 - Phase 0/0A complete (2026-08-30): full docs + legal drafts delivered.
 - Phase 1A complete (2026-08-30): workspace foundation — web app, API health endpoint, shared package, toolchain wired.
-- Phase 1B complete (2026-08-30): dev infra (postgres/MinIO/anvil via docker compose), DB/storage/ready foundations, IoT seam, Foundry scaffold, ESLint/Prettier, CI. No authentication or parking features yet.
-- Next: Phase 2 (auth + RBAC, parking registry, manual availability engine — see `docs/SESSION_HANDOFF.md`).
+- Phase 1B complete (2026-08-30): dev infra (postgres/MinIO/anvil via docker compose), DB/storage/ready foundations, IoT seam, Foundry scaffold, ESLint/Prettier, CI.
+- Phase 2A complete (2026-08-31): auth (register/login/refresh/logout/me), RBAC, users/roles/operators/parking tables + documents FK wiring, operator + facility foundation APIs, DB-backed test suite (42 api tests). See `docs/SESSION_HANDOFF.md`.
+- Next: Phase 2B — availability foundation (slots/zones, manual availability engine), public parking search — see `docs/SESSION_HANDOFF.md`.
 
 ## License
 

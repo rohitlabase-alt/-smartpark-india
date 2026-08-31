@@ -16,14 +16,19 @@ import { Client } from "pg";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../db/migrations/", import.meta.url));
 
-async function main(): Promise<void> {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    console.error("[db:migrate] DATABASE_URL is not set (see .env.example)");
-    process.exitCode = 1;
-    return;
-  }
+export interface MigrationResult {
+  applied: number;
+  skipped: number;
+  pending: number;
+}
 
+/**
+ * Applies pending `NNNN_name.sql` files (in filename order) against the given
+ * connection string, each inside a transaction, recording versions in
+ * `schema_migrations`. Safe to run repeatedly. Used by the CLI and by tests
+ * to prepare a throwaway database.
+ */
+export async function runMigrations(connectionString: string): Promise<MigrationResult> {
   const client = new Client({ connectionString });
   await client.connect();
   try {
@@ -61,13 +66,28 @@ async function main(): Promise<void> {
       }
     }
 
-    const pendingCount = files.length - applied.size - appliedCount;
-    console.log(
-      `[db:migrate] done — applied ${appliedCount}, skipped ${applied.size}, pending ${pendingCount}`,
-    );
+    return {
+      applied: appliedCount,
+      skipped: applied.size,
+      pending: files.length - applied.size - appliedCount,
+    };
   } finally {
     await client.end();
   }
+}
+
+async function main(): Promise<void> {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    console.error("[db:migrate] DATABASE_URL is not set (see .env.example)");
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = await runMigrations(connectionString);
+  console.log(
+    `[db:migrate] done — applied ${result.applied}, skipped ${result.skipped}, pending ${result.pending}`,
+  );
 }
 
 main().catch((err) => {

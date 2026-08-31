@@ -1,11 +1,9 @@
-import express, {
-  type ErrorRequestHandler,
-  type Express,
-  type Request,
-  type Response,
-} from "express";
-import { APP_NAME, APP_VERSION, ApiError, HealthResponse } from "@smartpark/shared";
+import express, { type Express, type Request, type Response } from "express";
+import { APP_NAME, APP_VERSION, HealthResponse } from "@smartpark/shared";
 import { checkDatabaseConnection } from "./db.js";
+import { authRouter } from "./modules/auth/auth.routes.js";
+import { operatorsRouter } from "./modules/operators/operators.routes.js";
+import { errorHandler, notFoundHandler } from "./http/error-handler.js";
 
 export interface CreateAppOptions {
   /**
@@ -17,7 +15,9 @@ export interface CreateAppOptions {
 
 /**
  * Builds the Express application (no side effects — importable for tests).
- * Business logic is intentionally absent (docs/ARCHITECTURE.md §3).
+ * Business logic lives in `backend/src/modules/*` (docs/ARCHITECTURE.md §3);
+ * this file only wires middleware, health endpoints, the API namespace mount,
+ * and the shared 404/error handlers.
  */
 export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
@@ -49,28 +49,16 @@ export function createApp(options: CreateAppOptions = {}): Express {
     res.status(postgresReady ? 200 : 503).json(body);
   });
 
-  // JSON 404 for unknown routes.
-  app.use((_req: Request, res: Response) => {
-    const body: ApiError = {
-      error: { code: "NOT_FOUND", message: "Route not found" },
-    };
-    res.status(404).json(body);
-  });
+  // Versioned API namespace (docs/API_SPEC.md base path /api/v1).
+  app.use("/api/v1/auth", authRouter);
+  app.use("/api/v1/operators", operatorsRouter);
 
-  // Central error handler (kept minimal; no business logic).
-  const onError: ErrorRequestHandler = (
-    err: unknown,
-    _req: Request,
-    res: Response,
-    _next: unknown,
-  ) => {
-    console.error("[api] unhandled error:", err);
-    const body: ApiError = {
-      error: { code: "INTERNAL_ERROR", message: "Unexpected server error" },
-    };
-    res.status(500).json(body);
-  };
-  app.use(onError);
+  // JSON 404 for unknown routes.
+  app.use(notFoundHandler);
+
+  // Central error handler (HttpError + parse failures → mapped status;
+  // anything else → 500). Never leaks internals (docs/SECURITY.md).
+  app.use(errorHandler);
 
   return app;
 }

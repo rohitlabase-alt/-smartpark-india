@@ -31,6 +31,23 @@ export interface BlockchainConfig {
   chainId: number;
 }
 
+export interface AuthConfig {
+  /**
+   * HMAC secret for access-token JWTs. MUST come from the environment
+   * (docs/SECURITY.md) — no default secret is ever shipped. When unset,
+   * auth operations fail closed with a clear configuration error.
+   */
+  jwtSecret: string | undefined;
+  /** Access-token lifetime in seconds (default 30 min, docs/SECURITY.md). */
+  jwtExpiresInSeconds: number;
+  /** Refresh-token lifetime in seconds (default 30 days). */
+  refreshTokenTtlSeconds: number;
+  /** JWT issuer claim. */
+  issuer: string;
+  /** JWT audience claim (matches the API namespace). */
+  audience: string;
+}
+
 export interface AppConfig {
   nodeEnv: string;
   port: number;
@@ -38,6 +55,22 @@ export interface AppConfig {
   database: DatabaseConfig;
   storage: StorageConfig;
   blockchain: BlockchainConfig;
+  auth: AuthConfig;
+}
+
+/**
+ * Parses "1800" (seconds), "30m", "1h", "7d" style durations.
+ * Throws on malformed input so misconfiguration fails fast at import time.
+ */
+export function parseDurationToSeconds(value: string): number {
+  const match = /^(\d+)(s|m|h|d)?$/.exec(value.trim());
+  if (!match) {
+    throw new Error(`Invalid duration: "${value}" (expected e.g. 1800, 30m, 1h, 7d)`);
+  }
+  const amount = Number(match[1]);
+  const unit = match[2] ?? "s";
+  const factor = { s: 1, m: 60, h: 3600, d: 86400 }[unit]!;
+  return amount * factor;
 }
 
 export const config: AppConfig = {
@@ -61,5 +94,12 @@ export const config: AppConfig = {
   blockchain: {
     anvilRpcUrl: process.env.ANVIL_RPC_URL || undefined,
     chainId: Number(process.env.ANVIL_CHAIN_ID ?? 31337),
+  },
+  auth: {
+    jwtSecret: process.env.JWT_SECRET || undefined,
+    jwtExpiresInSeconds: parseDurationToSeconds(process.env.JWT_EXPIRES_IN ?? "30m"),
+    refreshTokenTtlSeconds: parseDurationToSeconds(process.env.REFRESH_TOKEN_EXPIRES_IN ?? "30d"),
+    issuer: "SmartPark India API",
+    audience: "/api/v1",
   },
 };

@@ -14,12 +14,31 @@ defaults:
     shell: bash
 
 jobs:
-  # Everything is a single hard gate: any of the four stages failing fails CI.
-  # No deploy step, no secrets, no Docker services (tests are DB-free).
+  # Single hard gate: any of the stages failing fails CI. No deploy step, no
+  # secrets. Stage order: format → lint → typecheck → migrate → test → build.
+  # API tests are DB-backed (Phase 2A) and run against the postgres service +
+  # a throwaway `smartpark_test` database created by the test setup.
   node:
-    name: Node (lint → typecheck → test → build)
+    name: Node (lint → typecheck → db:migrate → test → build)
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://smartpark:smartpark@localhost:5432/smartpark
+      TEST_DATABASE_URL: postgresql://smartpark:smartpark@localhost:5432/smartpark_test
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: smartpark
+          POSTGRES_PASSWORD: smartpark
+          POSTGRES_DB: smartpark
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U smartpark"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,6 +60,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Migrate
+        run: npm run db:migrate
 
       - name: Test
         run: npm run test
