@@ -118,7 +118,7 @@ async function registerSession(label: string): Promise<AuthResponse> {
 
 async function registerOperatorSession(label: string): Promise<AuthResponse> {
   const session = await registerSession(label);
-  const { status, body } = await jsonPost(
+  const { status } = await jsonPost(
     "/api/v1/operators/register",
     { name: `${label} Parkings Pvt Ltd` },
     session.accessToken,
