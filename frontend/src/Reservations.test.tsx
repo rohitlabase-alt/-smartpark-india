@@ -56,6 +56,17 @@ const completedReservation = {
   state: "COMPLETED" as const,
 };
 
+const authoritativeReservation = {
+  ...reservation,
+  facilityId: 99,
+  slotId: null,
+  state: "CANCELLED" as const,
+  confirmedAt: "2026-09-01T10:05:00.000Z",
+  cancelledAt: "2026-09-01T10:10:00.000Z",
+  cancelReason: "changed plans",
+  updatedAt: "2026-09-01T10:10:00.000Z",
+};
+
 const availability = {
   facilityId: "PUN-000004",
   totalSlots: 4,
@@ -580,6 +591,174 @@ describe("My Reservations screen", () => {
     expect(container.querySelector('time[datetime="2026-09-10T08:00:00.000Z"]')).not.toBeNull();
     expect(container.querySelector('time[datetime="2026-09-10T10:00:00.000Z"]')).not.toBeNull();
     expect(container.querySelector('time[datetime="2026-09-01T10:05:00.000Z"]')).not.toBeNull();
+  });
+
+  it("shows a lazy View Details action and keeps the list visible while loading", async () => {
+    let resolveDetail!: (value: Response) => void;
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    expect(container.textContent).toContain("View Details");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/BKG-ABC123"))).toBe(false);
+    await clickButton("View Details");
+    expect(container.textContent).toContain("Loading reservation details...");
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]![0]).toContain("/reservations/BKG-ABC123");
+    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
+      headers: { Authorization: "Bearer access-token" },
+    });
+    resolveDetail(
+      new Response(JSON.stringify({ reservation: authoritativeReservation }), { status: 200 }),
+    );
+    await settleAsyncWork();
+  });
+
+  it("ignores a stale detail response after a newer reservation is selected", async () => {
+    let resolveA!: (value: Response) => void;
+    let resolveB!: (value: Response) => void;
+    const reservationB = {
+      ...reservation,
+      id: 13,
+      reservationCode: "BKG-XYZ789",
+      facilityId: 8,
+    };
+    const fetchMock = await renderReservationList([reservation, reservationB]);
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveA = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveB = resolve;
+        }),
+      );
+
+    const detailButtons = () =>
+      container.querySelectorAll<HTMLButtonElement>(".view-details-button");
+    await act(async () => detailButtons()[0]!.click());
+    await act(async () => detailButtons()[1]!.click());
+
+    resolveB(new Response(JSON.stringify({ reservation: reservationB }), { status: 200 }));
+    await settleAsyncWork();
+    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
+
+    resolveA(new Response(JSON.stringify({ reservation }), { status: 200 }));
+    await settleAsyncWork();
+    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
+    expect(container.querySelector(".reservation-detail")?.textContent).not.toContain(
+      "Facility ID4",
+    );
+  });
+
+  it("ignores a stale detail error after a newer reservation is selected", async () => {
+    let rejectA!: (reason: Error) => void;
+    let resolveB!: (value: Response) => void;
+    const reservationB = {
+      ...reservation,
+      id: 13,
+      reservationCode: "BKG-XYZ789",
+      facilityId: 8,
+    };
+    const fetchMock = await renderReservationList([reservation, reservationB]);
+    fetchMock
+      .mockReturnValueOnce(
+        new Promise((_, reject) => {
+          rejectA = reject;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveB = resolve;
+        }),
+      );
+
+    const detailButtons = () =>
+      container.querySelectorAll<HTMLButtonElement>(".view-details-button");
+    await act(async () => detailButtons()[0]!.click());
+    await act(async () => detailButtons()[1]!.click());
+    resolveB(new Response(JSON.stringify({ reservation: reservationB }), { status: 200 }));
+    await settleAsyncWork();
+    rejectA(new Error("stale failure"));
+    await settleAsyncWork();
+
+    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("renders authoritative detail data and optional timestamps", async () => {
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ reservation: authoritativeReservation }), { status: 200 }),
+    );
+    await clickButton("View Details");
+    await settleAsyncWork();
+
+    expect(container.textContent).toContain("Reservation details");
+    expect(container.textContent).toContain("Facility ID99");
+    expect(container.querySelector(".reservation-detail")?.textContent).not.toContain("Slot ID");
+    expect(container.textContent).toContain("CANCELLED");
+    expect(container.textContent).toContain("changed plans");
+    expect(container.textContent).toContain("Confirmed");
+    expect(container.textContent).toContain("Cancelled");
+    expect(container.querySelector('time[datetime="2026-09-01T10:10:00.000Z"]')).not.toBeNull();
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED", "You are not authorized to view this reservation."],
+    [404, "BOOKING_NOT_FOUND", "This reservation could not be found or is no longer available."],
+    [503, "SERVICE_UNAVAILABLE", "Try again later"],
+  ])("shows safe reservation detail error for %i", async (status, code, message) => {
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code, message: "Try again later" } }), { status }),
+    );
+    await clickButton("View Details");
+    await settleAsyncWork();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(message);
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(container.textContent).toContain("My Reservations");
+  });
+
+  it("shows network and malformed detail errors without triggering cancellation", async () => {
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
+    await clickButton("View Details");
+    await settleAsyncWork();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Unable to reach the reservations service.",
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cancel"))).toBe(false);
+
+    act(() => root.unmount());
+    container.replaceChildren();
+    root = createRoot(container);
+    vi.restoreAllMocks();
+    const malformedFetch = vi.spyOn(globalThis, "fetch");
+    malformedFetch
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: { reservationCode: "bad" } }), { status: 200 }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("View Details");
+    await settleAsyncWork();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "incomplete or malformed",
+    );
+    expect(container.textContent).toContain("BKG-ABC123");
   });
 
   it("omits the slot field when a reservation has no slot", async () => {

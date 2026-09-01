@@ -1,6 +1,7 @@
 import {
   OPERATOR_STATUSES,
   PARKING_SLOT_STATUSES,
+  type CreateFacilityRequest,
   type Operator,
   type OperatorRegisterRequest,
   type ParkingFacility,
@@ -127,6 +128,20 @@ export async function registerOperator(
   });
   if (!isOperator(body)) {
     throw new AuthApiError("The operator registration response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function createOperatorFacility(
+  accessToken: string,
+  input: CreateFacilityRequest,
+): Promise<ParkingFacility> {
+  const body = await request("/operators/me/facilities", accessToken, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isFacility(body)) {
+    throw new AuthApiError("The facility response was incomplete or malformed.");
   }
   return body;
 }

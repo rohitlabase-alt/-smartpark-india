@@ -108,6 +108,24 @@ export async function fetchReservations(accessToken: string): Promise<BookingLis
   return body;
 }
 
+export async function getReservation(
+  accessToken: string,
+  reservationCode: string,
+): Promise<BookingResponse> {
+  const body = await requestJson(
+    `/reservations/${encodeURIComponent(reservationCode)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+    "Unable to reach the reservations service.",
+    "Unable to load reservation details.",
+  );
+
+  if (!isBookingResponse(body)) {
+    throw new AuthApiError("The reservation detail response was incomplete or malformed.");
+  }
+
+  return body;
+}
+
 export async function createReservation(
   accessToken: string,
   input: CreateBookingRequest,

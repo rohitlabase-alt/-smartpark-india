@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   APP_NAME,
   APP_TAGLINE,
@@ -19,7 +19,12 @@ import PlaceholderBanner from "./components/PlaceholderBanner";
 import OperatorDashboard from "./OperatorDashboard";
 import OperatorRegistration from "./OperatorRegistration";
 import { fetchFacilityAvailability } from "./api/availability";
-import { cancelReservation, createReservation, fetchReservations } from "./api/reservations";
+import {
+  cancelReservation,
+  createReservation,
+  fetchReservations,
+  getReservation,
+} from "./api/reservations";
 import {
   AuthApiError,
   clearMemorySession,
@@ -38,6 +43,7 @@ type Screen =
   "availability" | "login" | "register" | "reservations" | "operator" | "operator-registration";
 type SessionState = "loading" | "authenticated" | "unauthenticated";
 type ReservationsState = "initial" | "loading" | "success" | "error";
+type ReservationDetailState = "initial" | "loading" | "success" | "error";
 
 function formatTimestamp(value: string): string {
   const date = new Date(value);
@@ -95,6 +101,15 @@ function cancellationErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Unable to cancel your reservation.";
 }
 
+function reservationDetailErrorMessage(cause: unknown): string {
+  if (cause instanceof AuthApiError) {
+    if (cause.status === 401) return "You are not authorized to view this reservation.";
+    if (cause.code === "BOOKING_NOT_FOUND")
+      return "This reservation could not be found or is no longer available.";
+  }
+  return cause instanceof Error ? cause.message : "Unable to load reservation details.";
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("availability");
   const [session, setSession] = useState<AuthSession>();
@@ -113,6 +128,12 @@ export default function App() {
   const [cancellationSubmitting, setCancellationSubmitting] = useState(false);
   const [cancellationError, setCancellationError] = useState("");
   const [cancellationSuccess, setCancellationSuccess] = useState("");
+  const [reservationDetailCode, setReservationDetailCode] = useState<string>();
+  const [reservationDetail, setReservationDetail] = useState<Reservation>();
+  const [reservationDetailState, setReservationDetailState] =
+    useState<ReservationDetailState>("initial");
+  const [reservationDetailError, setReservationDetailError] = useState("");
+  const reservationDetailRequestId = useRef(0);
 
   useEffect(() => {
     const existing = getMemorySession();
@@ -184,6 +205,7 @@ export default function App() {
     } catch (cause) {
       setAuthError(cause instanceof Error ? cause.message : "Unable to sign out cleanly.");
     } finally {
+      reservationDetailRequestId.current += 1;
       clearMemorySession();
       setSession(undefined);
       setSessionState("unauthenticated");
@@ -200,6 +222,11 @@ export default function App() {
     setCancellationCode(undefined);
     setCancellationError("");
     setCancellationSuccess("");
+    setReservationDetailCode(undefined);
+    setReservationDetail(undefined);
+    setReservationDetailState("initial");
+    setReservationDetailError("");
+    reservationDetailRequestId.current += 1;
     try {
       const result = await fetchReservations(session.accessToken);
       setReservations(result.reservations);
@@ -213,6 +240,25 @@ export default function App() {
             ? cause.message
             : "Unable to load your reservations.",
       );
+    }
+  }
+
+  async function handleViewReservationDetails(code: string): Promise<void> {
+    if (sessionState !== "authenticated" || !session) return;
+    const requestId = ++reservationDetailRequestId.current;
+    setReservationDetailCode(code);
+    setReservationDetail(undefined);
+    setReservationDetailState("loading");
+    setReservationDetailError("");
+    try {
+      const result = await getReservation(session.accessToken, code);
+      if (requestId !== reservationDetailRequestId.current) return;
+      setReservationDetail(result.reservation);
+      setReservationDetailState("success");
+    } catch (cause) {
+      if (requestId !== reservationDetailRequestId.current) return;
+      setReservationDetailState("error");
+      setReservationDetailError(reservationDetailErrorMessage(cause));
     }
   }
 
@@ -285,6 +331,9 @@ export default function App() {
           reservation.reservationCode === cancellationCode ? result.reservation : reservation,
         ),
       );
+      if (reservationDetailCode === cancellationCode) {
+        setReservationDetail(result.reservation);
+      }
       setCancellationCode(undefined);
       setCancellationError("");
       setCancellationSuccess(`Reservation ${cancellationCode} has been cancelled.`);
@@ -408,10 +457,15 @@ export default function App() {
             cancellationSuccess={cancellationSuccess}
             cancellationSubmitting={cancellationSubmitting}
             data={{ reservations }}
+            detail={reservationDetail}
+            detailCode={reservationDetailCode}
+            detailError={reservationDetailError}
+            detailState={reservationDetailState}
             error={reservationsError}
             onConfirmCancellation={() => void handleConfirmCancellation()}
             onKeepReservation={handleKeepReservation}
             onRequestCancellation={handleRequestCancellation}
+            onViewDetails={(code) => void handleViewReservationDetails(code)}
             state={reservationsState}
           />
         ) : screen === "operator" &&
@@ -508,10 +562,15 @@ function ReservationsView({
   cancellationSuccess,
   cancellationSubmitting,
   data,
+  detail,
+  detailCode,
+  detailError,
+  detailState,
   error,
   onConfirmCancellation,
   onKeepReservation,
   onRequestCancellation,
+  onViewDetails,
   state,
 }: {
   cancellationCode: string | undefined;
@@ -519,10 +578,15 @@ function ReservationsView({
   cancellationSuccess: string;
   cancellationSubmitting: boolean;
   data: BookingListResponse;
+  detail: Reservation | undefined;
+  detailCode: string | undefined;
+  detailError: string;
+  detailState: ReservationDetailState;
   error: string;
   onConfirmCancellation: () => void;
   onKeepReservation: () => void;
   onRequestCancellation: (code: string) => void;
+  onViewDetails: (code: string) => void;
   state: ReservationsState;
 }) {
   return (
@@ -536,6 +600,14 @@ function ReservationsView({
           {state === "success" ? `${data.reservations.length} total` : "Private history"}
         </span>
       </div>
+      {detailCode && (
+        <ReservationDetail
+          code={detailCode}
+          error={detailError}
+          reservation={detail}
+          state={detailState}
+        />
+      )}
       <div className="status-region" aria-live="polite" aria-busy={state === "loading"}>
         {state === "loading" && <p className="notice">Loading your reservations...</p>}
         {state === "error" && (
@@ -566,6 +638,7 @@ function ReservationsView({
                 onConfirmCancellation={onConfirmCancellation}
                 onKeepReservation={onKeepReservation}
                 onRequestCancellation={onRequestCancellation}
+                onViewDetails={onViewDetails}
                 reservation={reservation}
               />
             ))}
@@ -576,12 +649,113 @@ function ReservationsView({
   );
 }
 
+function ReservationDetail({
+  code,
+  error,
+  reservation,
+  state,
+}: {
+  code: string;
+  error: string;
+  reservation: Reservation | undefined;
+  state: ReservationDetailState;
+}) {
+  return (
+    <section className="reservation-detail" aria-labelledby="reservation-detail-title">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Authoritative record</p>
+          <h3 id="reservation-detail-title">Reservation details</h3>
+        </div>
+        <span className="reservation-count">{code}</span>
+      </div>
+      {state === "loading" && (
+        <p className="notice" aria-live="polite">
+          Loading reservation details...
+        </p>
+      )}
+      {state === "error" && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
+      {state === "success" && reservation && (
+        <dl className="reservation-detail-list">
+          <div>
+            <dt>Reservation code</dt>
+            <dd>{reservation.reservationCode}</dd>
+          </div>
+          <div>
+            <dt>Facility ID</dt>
+            <dd>{reservation.facilityId}</dd>
+          </div>
+          {reservation.slotId !== null && (
+            <div>
+              <dt>Slot ID</dt>
+              <dd>{reservation.slotId}</dd>
+            </div>
+          )}
+          <div>
+            <dt>Status</dt>
+            <dd>{bookingStatusLabel(reservation.state)}</dd>
+          </div>
+          <div>
+            <dt>Start time</dt>
+            <dd>
+              <time dateTime={reservation.startsAt}>{formatTimestamp(reservation.startsAt)}</time>
+            </dd>
+          </div>
+          <div>
+            <dt>End time</dt>
+            <dd>
+              <time dateTime={reservation.endsAt}>{formatTimestamp(reservation.endsAt)}</time>
+            </dd>
+          </div>
+          <div>
+            <dt>Created</dt>
+            <dd>
+              <time dateTime={reservation.createdAt}>{formatTimestamp(reservation.createdAt)}</time>
+            </dd>
+          </div>
+          {reservation.confirmedAt && (
+            <div>
+              <dt>Confirmed</dt>
+              <dd>
+                <time dateTime={reservation.confirmedAt}>
+                  {formatTimestamp(reservation.confirmedAt)}
+                </time>
+              </dd>
+            </div>
+          )}
+          {reservation.cancelledAt && (
+            <div>
+              <dt>Cancelled</dt>
+              <dd>
+                <time dateTime={reservation.cancelledAt}>
+                  {formatTimestamp(reservation.cancelledAt)}
+                </time>
+              </dd>
+            </div>
+          )}
+          {reservation.cancelReason && (
+            <div>
+              <dt>Cancellation reason</dt>
+              <dd>{reservation.cancelReason}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function ReservationCard({
   cancellationActive,
   cancellationSubmitting,
   onConfirmCancellation,
   onKeepReservation,
   onRequestCancellation,
+  onViewDetails,
   reservation,
 }: {
   cancellationActive: boolean;
@@ -589,6 +763,7 @@ function ReservationCard({
   onConfirmCancellation: () => void;
   onKeepReservation: () => void;
   onRequestCancellation: (code: string) => void;
+  onViewDetails: (code: string) => void;
   reservation: Reservation;
 }) {
   return (
@@ -632,6 +807,13 @@ function ReservationCard({
           </dd>
         </div>
       </dl>
+      <button
+        className="view-details-button"
+        onClick={() => onViewDetails(reservation.reservationCode)}
+        type="button"
+      >
+        View Details
+      </button>
       {reservation.state === "CONFIRMED" && !cancellationActive && (
         <button
           className="cancel-reservation-button"

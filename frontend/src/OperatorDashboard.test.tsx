@@ -96,6 +96,19 @@ async function renderAppWithUser(user: PublicUser) {
   await settle();
 }
 
+function setField(id: string, value: string, eventName = "input") {
+  act(() => {
+    const element = container.querySelector<HTMLInputElement | HTMLSelectElement>(`#${id}`)!;
+    const prototype =
+      element instanceof HTMLSelectElement
+        ? HTMLSelectElement.prototype
+        : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")!.set!;
+    setter.call(element, value);
+    element.dispatchEvent(new Event(eventName, { bubbles: true }));
+  });
+}
+
 beforeEach(() => {
   clearMemorySession();
   container = document.createElement("div");
@@ -198,6 +211,112 @@ describe("read-only operator dashboard", () => {
     expect(container.textContent).toContain("has no slots to display");
   });
 
+  it("validates and creates a facility without sending client-owned fields", async () => {
+    const createdFacility = {
+      ...facility,
+      id: 8,
+      parkingId: "PUN-000008",
+      name: "New Lot",
+      verificationStatus: "PENDING" as const,
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(createdFacility), { status: 201 }));
+    await renderDashboard();
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-create-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Name, facility type, and city are required");
+
+    setField("facility-name", "New Lot");
+    setField("facility-type", "private", "change");
+    setField("facility-city", "Pune");
+    setField("facility-capacity", "80");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-create-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ name: "New Lot", type: "private", city: "Pune", capacity: 80 }),
+    });
+    expect(container.textContent).toContain("New Lot");
+    expect(container.textContent).toContain("pending verification");
+  });
+
+  it("disables duplicate facility submissions while creation is pending", async () => {
+    let resolve!: (response: Response) => void;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockReturnValueOnce(
+        new Promise((done) => {
+          resolve = done;
+        }),
+      );
+    await renderDashboard();
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    setField("facility-name", "New Lot");
+    setField("facility-type", "private", "change");
+    setField("facility-city", "Pune");
+    setField("facility-capacity", "80");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-create-form")!.requestSubmit(),
+    );
+    expect(
+      container.querySelector<HTMLButtonElement>(".facility-create-form button[type=submit]")
+        ?.disabled,
+    ).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    resolve(new Response(JSON.stringify({ ...facility, name: "New Lot" }), { status: 201 }));
+    await settle();
+  });
+
+  it.each([
+    [400, "400 failure"],
+    [401, "Your operator session is no longer authorized"],
+    [403, "Your operator account is inactive"],
+    [409, "409 failure"],
+  ])("shows facility creation error %i", async (status, message) => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code:
+                status === 403
+                  ? "ACCOUNT_INACTIVE"
+                  : status === 409
+                    ? "CONFLICT"
+                    : status === 401
+                      ? "UNAUTHORIZED"
+                      : "VALIDATION_ERROR",
+              message: `${status} failure`,
+            },
+          }),
+          { status },
+        ),
+      );
+    await renderDashboard();
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    setField("facility-name", "New Lot");
+    setField("facility-type", "private", "change");
+    setField("facility-city", "Pune");
+    setField("facility-capacity", "80");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-create-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+  });
+
   it.each([
     [401, "Your operator session is no longer authorized"],
     [403, "Your account is not authorized"],
@@ -240,15 +359,15 @@ describe("read-only operator dashboard", () => {
     expect(container.textContent).toContain("incomplete or malformed");
   });
 
-  it("renders no mutation controls", async () => {
+  it("renders no facility mutation controls other than creation", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
-    for (const text of ["Create", "Edit", "Delete", "Save", "Update"]) {
+    for (const text of ["Edit", "Delete", "Save", "Update"]) {
       expect(container.textContent).not.toContain(text);
     }
-    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(container.textContent).toContain("Create facility");
   });
 });

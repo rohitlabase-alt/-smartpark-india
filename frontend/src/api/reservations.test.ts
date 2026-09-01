@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BookingListResponse, BookingResponse, PublicUser } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
-import { cancelReservation, createReservation, fetchReservations } from "./reservations";
+import {
+  cancelReservation,
+  createReservation,
+  fetchReservations,
+  getReservation,
+} from "./reservations";
 
 const user: PublicUser = {
   id: 7,
@@ -46,6 +51,49 @@ const createInput = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("reservations API client", () => {
+  it("gets a reservation by encoded code with the bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(createResponse), { status: 200 }));
+    await expect(getReservation("access-token", "BKG/ABC 123")).resolves.toEqual(createResponse);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/reservations/BKG%2FABC%20123`, {
+      headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+    });
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [404, "BOOKING_NOT_FOUND"],
+    [503, "SERVICE_UNAVAILABLE"],
+  ])("surfaces %i reservation detail responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { code, message: `${code} message` } }), { status }),
+    );
+    await expect(getReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
+      status,
+      code,
+    } satisfies Partial<AuthApiError>);
+  });
+
+  it("rejects malformed reservation detail responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservation: { reservationCode: "BKG-INCOMPLETE" } }), {
+        status: 200,
+      }),
+    );
+    await expect(getReservation("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it("surfaces reservation detail network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the reservations service.",
+    } satisfies Partial<AuthApiError>);
+  });
+
   it("posts cancellation with the bearer token and empty JSON body", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

@@ -1,6 +1,18 @@
-import { useEffect, useState } from "react";
-import type { Operator, ParkingFacility, ParkingSlot } from "@smartpark/shared";
-import { getOperatorFacilities, getOperatorFacilitySlots, getOperatorMe } from "./api/operators";
+import { useEffect, useState, type FormEvent } from "react";
+import {
+  FACILITY_TYPES,
+  type CreateFacilityRequest,
+  type FacilityType,
+  type Operator,
+  type ParkingFacility,
+  type ParkingSlot,
+} from "@smartpark/shared";
+import {
+  createOperatorFacility,
+  getOperatorFacilities,
+  getOperatorFacilitySlots,
+  getOperatorMe,
+} from "./api/operators";
 import { AuthApiError } from "./api/auth";
 
 type LoadState = "loading" | "success" | "error";
@@ -9,6 +21,8 @@ function operatorError(cause: unknown): string {
   if (cause instanceof AuthApiError) {
     if (cause.status === 401)
       return "Your operator session is no longer authorized. Please sign in again.";
+    if (cause.code === "ACCOUNT_INACTIVE")
+      return "Your operator account is inactive and cannot create facilities.";
     if (cause.status === 403) return "Your account is not authorized to access operator data.";
     return cause.message;
   }
@@ -30,6 +44,20 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [slotsState, setSlotsState] = useState<LoadState>("success");
   const [slotsError, setSlotsError] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createSubmitting, setCreateSubmitting] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [createSuccess, setCreateSuccess] = useState("");
+  const [facilityName, setFacilityName] = useState("");
+  const [facilityType, setFacilityType] = useState<FacilityType | "">("");
+  const [facilityCity, setFacilityCity] = useState("");
+  const [facilityState, setFacilityState] = useState("");
+  const [facilityArea, setFacilityArea] = useState("");
+  const [facilityAddress, setFacilityAddress] = useState("");
+  const [facilityLatitude, setFacilityLatitude] = useState("");
+  const [facilityLongitude, setFacilityLongitude] = useState("");
+  const [facilityCapacity, setFacilityCapacity] = useState("");
+  const [facilityDescription, setFacilityDescription] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -107,6 +135,72 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
 
   const selectedFacility = facilities.find((facility) => facility.id === selectedFacilityId);
 
+  async function handleCreateFacility(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setCreateError("");
+    setCreateSuccess("");
+    const capacity = Number(facilityCapacity);
+    if (
+      !facilityName.trim() ||
+      !facilityType ||
+      !FACILITY_TYPES.includes(facilityType as FacilityType) ||
+      !facilityCity.trim()
+    ) {
+      setCreateError("Name, facility type, and city are required.");
+      return;
+    }
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 100000) {
+      setCreateError("Capacity must be a whole number between 1 and 100,000.");
+      return;
+    }
+    const latitude = facilityLatitude.trim() ? Number(facilityLatitude) : undefined;
+    const longitude = facilityLongitude.trim() ? Number(facilityLongitude) : undefined;
+    if (
+      (latitude !== undefined && !Number.isFinite(latitude)) ||
+      (longitude !== undefined && !Number.isFinite(longitude))
+    ) {
+      setCreateError("Enter valid latitude and longitude coordinates.");
+      return;
+    }
+    const input: CreateFacilityRequest = {
+      name: facilityName.trim(),
+      type: facilityType,
+      city: facilityCity.trim(),
+      capacity,
+    };
+    if (facilityState.trim()) input.state = facilityState.trim();
+    if (facilityArea.trim()) input.area = facilityArea.trim();
+    if (facilityAddress.trim()) input.address = facilityAddress.trim();
+    if (facilityDescription.trim()) input.description = facilityDescription.trim();
+    if (latitude !== undefined) input.latitude = latitude;
+    if (longitude !== undefined) input.longitude = longitude;
+
+    setCreateSubmitting(true);
+    try {
+      const created = await createOperatorFacility(accessToken, input);
+      setFacilities((current) => [...current, created]);
+      setCreateSuccess(
+        created.verificationStatus === "PENDING"
+          ? `${created.name} was created and is pending verification.`
+          : `${created.name} was created with ${label(created.verificationStatus)} verification status.`,
+      );
+      setFacilityName("");
+      setFacilityType("");
+      setFacilityCity("");
+      setFacilityState("");
+      setFacilityArea("");
+      setFacilityAddress("");
+      setFacilityLatitude("");
+      setFacilityLongitude("");
+      setFacilityCapacity("");
+      setFacilityDescription("");
+    } catch (cause) {
+      setCreateError(operatorError(cause));
+    } finally {
+      setCreateSubmitting(false);
+    }
+  }
+
   return (
     <section className="operator-dashboard" aria-labelledby="operator-dashboard-title">
       <div className="section-heading">
@@ -114,7 +208,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
           <p className="section-kicker">Operations</p>
           <h2 id="operator-dashboard-title">Operator Dashboard</h2>
         </div>
-        <span className="reservation-count">Read-only view</span>
+        <span className="reservation-count">Facility management</span>
       </div>
 
       <div className="operator-grid">
@@ -163,6 +257,113 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
               <span className="reservation-count">{facilities.length} total</span>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setCreateOpen((open) => !open);
+              setCreateError("");
+            }}
+          >
+            {createOpen ? "Close facility form" : "Create facility"}
+          </button>
+          {createOpen && (
+            <form
+              className="facility-create-form"
+              onSubmit={(event) => void handleCreateFacility(event)}
+            >
+              <label htmlFor="facility-name">Name</label>
+              <input
+                id="facility-name"
+                value={facilityName}
+                onChange={(event) => setFacilityName(event.target.value)}
+              />
+              <label htmlFor="facility-type">Facility type</label>
+              <select
+                id="facility-type"
+                value={facilityType}
+                onChange={(event) => setFacilityType(event.target.value as FacilityType)}
+              >
+                <option value="">Select a type</option>
+                {FACILITY_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {label(type)}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="facility-city">City</label>
+              <input
+                id="facility-city"
+                value={facilityCity}
+                onChange={(event) => setFacilityCity(event.target.value)}
+              />
+              <label htmlFor="facility-state">State</label>
+              <input
+                id="facility-state"
+                value={facilityState}
+                onChange={(event) => setFacilityState(event.target.value)}
+              />
+              <label htmlFor="facility-area">Area</label>
+              <input
+                id="facility-area"
+                value={facilityArea}
+                onChange={(event) => setFacilityArea(event.target.value)}
+              />
+              <label htmlFor="facility-address">Address</label>
+              <input
+                id="facility-address"
+                value={facilityAddress}
+                onChange={(event) => setFacilityAddress(event.target.value)}
+              />
+              <label htmlFor="facility-latitude">Latitude</label>
+              <input
+                id="facility-latitude"
+                type="number"
+                step="any"
+                min="-90"
+                max="90"
+                value={facilityLatitude}
+                onChange={(event) => setFacilityLatitude(event.target.value)}
+              />
+              <label htmlFor="facility-longitude">Longitude</label>
+              <input
+                id="facility-longitude"
+                type="number"
+                step="any"
+                min="-180"
+                max="180"
+                value={facilityLongitude}
+                onChange={(event) => setFacilityLongitude(event.target.value)}
+              />
+              <label htmlFor="facility-capacity">Capacity</label>
+              <input
+                id="facility-capacity"
+                type="number"
+                min="1"
+                max="100000"
+                value={facilityCapacity}
+                onChange={(event) => setFacilityCapacity(event.target.value)}
+              />
+              <label htmlFor="facility-description">Description</label>
+              <textarea
+                id="facility-description"
+                value={facilityDescription}
+                onChange={(event) => setFacilityDescription(event.target.value)}
+              />
+              {createError && (
+                <p className="notice error" role="alert">
+                  {createError}
+                </p>
+              )}
+              {createSuccess && (
+                <p className="notice success" role="status">
+                  {createSuccess}
+                </p>
+              )}
+              <button type="submit" disabled={createSubmitting}>
+                {createSubmitting ? "Creating..." : "Submit facility"}
+              </button>
+            </form>
+          )}
           {facilitiesState === "loading" && <p className="notice">Loading facilities...</p>}
           {facilitiesState === "error" && (
             <p className="notice error" role="alert">
@@ -185,7 +386,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                 >
                   <strong>{facility.name}</strong>
                   <span>
-                    {facility.city} · {label(facility.verificationStatus)}
+                    {facility.parkingId} · {facility.city} · Capacity {facility.capacity} ·{" "}
+                    {label(facility.verificationStatus)}
                   </span>
                 </button>
               ))}

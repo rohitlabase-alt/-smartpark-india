@@ -5,6 +5,7 @@ import {
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorMe,
+  createOperatorFacility,
   registerOperator,
 } from "./operators";
 
@@ -56,6 +57,13 @@ const registrationInput = {
   name: "New Parking Co",
   businessType: "private",
   registrationNumber: "REG-123",
+};
+const facilityInput = {
+  name: "New Lot",
+  type: "private" as const,
+  city: "Pune",
+  state: "Maharashtra",
+  capacity: 80,
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -148,6 +156,59 @@ describe("operator profile API client", () => {
 });
 
 describe("operator facilities API client", () => {
+  it("posts the facility input with the bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(facility), { status: 201 }));
+    await expect(createOperatorFacility("access-token", facilityInput)).resolves.toEqual(facility);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/facilities`, {
+      method: "POST",
+      body: JSON.stringify(facilityInput),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+  });
+
+  it.each([
+    [400, "VALIDATION_ERROR"],
+    [401, "UNAUTHORIZED"],
+    [403, "ACCOUNT_INACTIVE"],
+    [409, "CONFLICT"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces facility creation response %i", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(createOperatorFacility("access-token", facilityInput)).rejects.toMatchObject({
+      status,
+      code,
+    });
+  });
+
+  it("rejects malformed successful facility responses and network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: facility.id }), { status: 201 }),
+    );
+    await expect(createOperatorFacility("access-token", facilityInput)).rejects.toThrow(
+      "incomplete or malformed",
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(createOperatorFacility("access-token", facilityInput)).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+
+  it("does not expose implementation details for malformed error responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not json", { status: 400 }));
+    await expect(createOperatorFacility("access-token", facilityInput)).rejects.toThrow(
+      "not valid JSON",
+    );
+  });
+
   it("gets facilities with the bearer token", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
