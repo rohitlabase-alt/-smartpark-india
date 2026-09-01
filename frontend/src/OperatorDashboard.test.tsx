@@ -162,7 +162,7 @@ describe("operator dashboard visibility", () => {
   });
 });
 
-describe("read-only operator dashboard", () => {
+describe("operator dashboard", () => {
   it("loads profile and facilities, then lazily loads slots for the selected facility", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -215,6 +215,169 @@ describe("read-only operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("has no slots to display");
+  });
+
+  it("creates a slot with server-authoritative defaults and updates the selected list", async () => {
+    const createdSlot = {
+      ...slot,
+      id: 10,
+      slotCode: "B01",
+      vehicleType: "car",
+      status: "AVAILABLE" as const,
+      reservationsEnabled: true,
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(createdSlot), { status: 201 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Create Parking Slot").click());
+    expect(container.textContent).toContain("server default: AVAILABLE");
+    expect(container.textContent).toContain("server default: enabled");
+    setField("slot-code", " B01 ");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]![0]).toContain("/operators/me/facilities/4/slots");
+    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ slotCode: "B01" }),
+    });
+    expect(container.textContent).toContain("B01");
+    expect(container.textContent).toContain("reservations enabled");
+    expect(container.textContent).toContain("created with status AVAILABLE");
+    expect(container.querySelector(".slot-create-form")).toBeNull();
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain(
+      "Koregaon Lot",
+    );
+  });
+
+  it("validates slot creation and preserves the selected facility", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Create Parking Slot").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Enter a slot code");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    setField("slot-code", "x".repeat(41));
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("40 characters or fewer");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    setField("slot-code", "B01");
+    setField("slot-vehicle-type", "v".repeat(33));
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("32 characters or fewer");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain(
+      "Koregaon Lot",
+    );
+  });
+
+  it("shows slot creation loading state and prevents duplicate POST requests", async () => {
+    let resolveCreate!: (response: Response) => void;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Create Parking Slot").click());
+    setField("slot-code", "B01");
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    const form = container.querySelector<HTMLFormElement>(".slot-create-form")!;
+    await act(async () => form.requestSubmit());
+    expect(container.textContent).toContain("Creating...");
+    expect(
+      container.querySelector<HTMLButtonElement>(".slot-create-form button[type=submit]")?.disabled,
+    ).toBe(true);
+    await act(async () => form.requestSubmit());
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    resolveCreate(new Response(JSON.stringify({ ...slot, slotCode: "B01" }), { status: 201 }));
+    await settle();
+  });
+
+  it.each([
+    [400, "400 failure", "VALIDATION_ERROR"],
+    [401, "Your operator session is no longer authorized", "UNAUTHORIZED"],
+    [403, "Your account is not authorized", "FORBIDDEN"],
+    [404, "404 failure", "FACILITY_NOT_FOUND"],
+    [409, "409 failure", "DUPLICATE_SLOT_CODE"],
+  ])("shows slot creation error %i and preserves form data", async (status, message, code) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code, message: `${status} failure` } }), { status }),
+      );
+    await renderDashboard();
+    await act(async () => buttonWithText("Create Parking Slot").click());
+    setField("slot-code", "B01");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.querySelector<HTMLInputElement>("#slot-code")?.value).toBe("B01");
+  });
+
+  it("ignores a stale slot creation response after changing facilities", async () => {
+    let resolveCreate!: (response: Response) => void;
+    const secondSlot = { ...slot, id: 10, facilityId: secondFacility.id, slotCode: "B01" };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Create Parking Slot").click());
+    setField("slot-code", "A02");
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
+    );
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([secondSlot]), { status: 200 }));
+    const camp = Array.from(container.querySelectorAll<HTMLButtonElement>(".facility-item")).find(
+      (button) => button.textContent?.includes("Camp Lot"),
+    )!;
+    await act(async () => camp.click());
+    await settle();
+    resolveCreate(new Response(JSON.stringify({ ...slot, slotCode: "A02" }), { status: 201 }));
+    await settle();
+
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain("Camp Lot");
+    expect(container.textContent).toContain("B01");
+    expect(container.textContent).not.toContain("A02");
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("opens the selected facility edit form with authoritative values", async () => {

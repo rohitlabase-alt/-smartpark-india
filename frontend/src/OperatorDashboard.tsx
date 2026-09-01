@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   FACILITY_TYPES,
+  PARKING_SLOT_STATUSES,
   type CreateFacilityRequest,
+  type CreateSlotRequest,
   type FacilityType,
   type Operator,
   type ParkingFacility,
   type ParkingSlot,
+  type ParkingSlotStatus,
   type UpdateFacilityRequest,
 } from "@smartpark/shared";
 import {
   createOperatorFacility,
+  createOperatorSlot,
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorMe,
@@ -75,6 +79,15 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [editFacilityCapacity, setEditFacilityCapacity] = useState("");
   const [editFacilityDescription, setEditFacilityDescription] = useState("");
   const facilityEditRequestId = useRef(0);
+  const [slotCreateOpen, setSlotCreateOpen] = useState(false);
+  const [slotCreateSubmitting, setSlotCreateSubmitting] = useState(false);
+  const [slotCreateError, setSlotCreateError] = useState("");
+  const [slotCreateSuccess, setSlotCreateSuccess] = useState("");
+  const [slotCode, setSlotCode] = useState("");
+  const [slotVehicleType, setSlotVehicleType] = useState("");
+  const [slotStatus, setSlotStatus] = useState<ParkingSlotStatus | "">("");
+  const [slotReservationsEnabled, setSlotReservationsEnabled] = useState<"" | "true" | "false">("");
+  const slotCreateRequestId = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -91,6 +104,11 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setEditFacilityId(undefined);
     setEditSubmitting(false);
     facilityEditRequestId.current += 1;
+    setSlotCreateOpen(false);
+    setSlotCreateSubmitting(false);
+    setSlotCreateError("");
+    setSlotCreateSuccess("");
+    slotCreateRequestId.current += 1;
 
     void getOperatorMe(accessToken).then(
       (result) => {
@@ -162,6 +180,11 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setEditSubmitting(false);
     setEditError("");
     setEditSuccess("");
+    setSlotCreateOpen(false);
+    setSlotCreateSubmitting(false);
+    setSlotCreateError("");
+    setSlotCreateSuccess("");
+    slotCreateRequestId.current += 1;
   }
 
   function handleOpenEdit(facility: ParkingFacility): void {
@@ -187,6 +210,77 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setEditFacilityId(undefined);
     setEditSubmitting(false);
     setEditError("");
+  }
+
+  function handleOpenSlotCreate(): void {
+    slotCreateRequestId.current += 1;
+    setSlotCreateOpen(true);
+    setSlotCreateSubmitting(false);
+    setSlotCreateError("");
+    setSlotCreateSuccess("");
+  }
+
+  function handleCloseSlotCreate(): void {
+    slotCreateRequestId.current += 1;
+    setSlotCreateOpen(false);
+    setSlotCreateSubmitting(false);
+    setSlotCreateError("");
+  }
+
+  async function handleCreateSlot(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (slotCreateSubmitting || selectedFacilityId === undefined) return;
+    setSlotCreateError("");
+    setSlotCreateSuccess("");
+    const trimmedSlotCode = slotCode.trim();
+    const trimmedVehicleType = slotVehicleType.trim();
+    if (!trimmedSlotCode) {
+      setSlotCreateError("Enter a slot code.");
+      return;
+    }
+    if (trimmedSlotCode.length > 40) {
+      setSlotCreateError("Slot code must be 40 characters or fewer.");
+      return;
+    }
+    if (trimmedVehicleType.length > 32) {
+      setSlotCreateError("Vehicle type must be 32 characters or fewer.");
+      return;
+    }
+    if (slotStatus && !PARKING_SLOT_STATUSES.includes(slotStatus as ParkingSlotStatus)) {
+      setSlotCreateError("Select a valid slot status.");
+      return;
+    }
+
+    const request: CreateSlotRequest = { slotCode: trimmedSlotCode };
+    if (trimmedVehicleType) request.vehicleType = trimmedVehicleType;
+    if (slotStatus) request.status = slotStatus;
+    if (slotReservationsEnabled) request.reservationsEnabled = slotReservationsEnabled === "true";
+
+    const facilityId = selectedFacilityId;
+    const requestId = ++slotCreateRequestId.current;
+    setSlotCreateSubmitting(true);
+    try {
+      const created = await createOperatorSlot(accessToken, facilityId, request);
+      if (requestId !== slotCreateRequestId.current) return;
+      setSlots((current) =>
+        current.some((slot) => slot.id === created.id)
+          ? current.map((slot) => (slot.id === created.id ? created : slot))
+          : [...current, created],
+      );
+      setSlotCreateOpen(false);
+      setSlotCreateSuccess(
+        `${created.slotCode} was created with status ${label(created.status)}; reservations are ${created.reservationsEnabled ? "enabled" : "disabled"}.`,
+      );
+      setSlotCode("");
+      setSlotVehicleType("");
+      setSlotStatus("");
+      setSlotReservationsEnabled("");
+    } catch (cause) {
+      if (requestId !== slotCreateRequestId.current) return;
+      setSlotCreateError(operatorError(cause));
+    } finally {
+      if (requestId === slotCreateRequestId.current) setSlotCreateSubmitting(false);
+    }
   }
 
   async function handleUpdateFacility(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -624,6 +718,77 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
               {editSuccess}
             </p>
           )}
+          <button type="button" onClick={handleOpenSlotCreate}>
+            Create Parking Slot
+          </button>
+          {slotCreateOpen && (
+            <form className="slot-create-form" onSubmit={(event) => void handleCreateSlot(event)}>
+              <div className="section-heading compact-heading">
+                <h4>Create parking slot</h4>
+                <button type="button" onClick={handleCloseSlotCreate}>
+                  Cancel
+                </button>
+              </div>
+              <label htmlFor="slot-code">Slot code</label>
+              <input
+                id="slot-code"
+                maxLength={40}
+                value={slotCode}
+                onChange={(event) => setSlotCode(event.target.value)}
+              />
+              <label htmlFor="slot-vehicle-type">
+                Vehicle type <span className="optional">(optional)</span>
+              </label>
+              <input
+                id="slot-vehicle-type"
+                maxLength={32}
+                value={slotVehicleType}
+                onChange={(event) => setSlotVehicleType(event.target.value)}
+              />
+              <label htmlFor="slot-status">
+                Status <span className="optional">(server default: AVAILABLE)</span>
+              </label>
+              <select
+                id="slot-status"
+                value={slotStatus}
+                onChange={(event) => setSlotStatus(event.target.value as ParkingSlotStatus)}
+              >
+                <option value="">Use server default</option>
+                {PARKING_SLOT_STATUSES.map((status) => (
+                  <option key={status} value={status}>
+                    {label(status)}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="slot-reservations-enabled">
+                Reservations <span className="optional">(server default: enabled)</span>
+              </label>
+              <select
+                id="slot-reservations-enabled"
+                value={slotReservationsEnabled}
+                onChange={(event) =>
+                  setSlotReservationsEnabled(event.target.value as "" | "true" | "false")
+                }
+              >
+                <option value="">Use server default</option>
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </select>
+              {slotCreateError && (
+                <p className="notice error" role="alert">
+                  {slotCreateError}
+                </p>
+              )}
+              <button type="submit" disabled={slotCreateSubmitting}>
+                {slotCreateSubmitting ? "Creating..." : "Create slot"}
+              </button>
+            </form>
+          )}
+          {slotCreateSuccess && (
+            <p className="notice success" role="status">
+              {slotCreateSuccess}
+            </p>
+          )}
           {slotsState === "loading" && <p className="notice">Loading slots...</p>}
           {slotsState === "error" && (
             <p className="notice error" role="alert">
@@ -639,7 +804,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                 <li key={slot.id}>
                   <strong>{slot.slotCode}</strong>
                   <span>
-                    {slot.vehicleType} · {label(slot.status)}
+                    {slot.vehicleType} · {label(slot.status)} · reservations{" "}
+                    {slot.reservationsEnabled ? "enabled" : "disabled"}
                   </span>
                 </li>
               ))}

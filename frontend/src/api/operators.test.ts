@@ -6,6 +6,7 @@ import {
   getOperatorFacilitySlots,
   getOperatorMe,
   createOperatorFacility,
+  createOperatorSlot,
   registerOperator,
   updateOperatorFacility,
 } from "./operators";
@@ -244,6 +245,68 @@ describe("operator facilities API client", () => {
         Authorization: "Bearer access-token",
       },
     });
+  });
+
+  it("posts a slot to the selected facility with the exact supported fields", async () => {
+    const slotInput = {
+      slotCode: "B01",
+      vehicleType: "car",
+      status: "AVAILABLE" as const,
+      reservationsEnabled: true,
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(slot), { status: 201 }));
+    await expect(createOperatorSlot("access-token", 42, slotInput)).resolves.toEqual(slot);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/facilities/42/slots`, {
+      method: "POST",
+      body: JSON.stringify(slotInput),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+    const sentBody = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody).not.toHaveProperty("operatorId");
+    expect(sentBody).not.toHaveProperty("userId");
+    expect(sentBody).not.toHaveProperty("facilityId");
+    expect(sentBody).not.toHaveProperty("ownership");
+  });
+
+  it.each([
+    [400, "VALIDATION_ERROR"],
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [404, "FACILITY_NOT_FOUND"],
+    [409, "DUPLICATE_SLOT_CODE"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces slot creation response %i", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(createOperatorSlot("access-token", 42, { slotCode: "B01" })).rejects.toMatchObject(
+      { status, code },
+    );
+  });
+
+  it("rejects malformed slot responses and maps network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: slot.id }), { status: 201 }),
+    );
+    await expect(createOperatorSlot("access-token", 42, { slotCode: "B01" })).rejects.toThrow(
+      "incomplete or malformed",
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(createOperatorSlot("access-token", 42, { slotCode: "B01" })).rejects.toMatchObject(
+      {
+        name: "AuthApiError",
+        message: "Unable to reach the operator service.",
+      } satisfies Partial<AuthApiError>,
+    );
   });
 
   it.each([
