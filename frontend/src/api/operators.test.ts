@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Operator, ParkingFacility, ParkingSlot } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
-import { getOperatorFacilities, getOperatorFacilitySlots, getOperatorMe } from "./operators";
+import {
+  getOperatorFacilities,
+  getOperatorFacilitySlots,
+  getOperatorMe,
+  registerOperator,
+} from "./operators";
 
 const operator: Operator = {
   id: 3,
@@ -47,11 +52,65 @@ const slot: ParkingSlot = {
   updatedAt: "2026-09-01T10:00:00.000Z",
 };
 
+const registrationInput = {
+  name: "New Parking Co",
+  businessType: "private",
+  registrationNumber: "REG-123",
+};
+
 afterEach(() => vi.restoreAllMocks());
 
 function apiError(status: number, code: string) {
   return new Response(JSON.stringify({ error: { code, message: `${code} message` } }), { status });
 }
+
+describe("operator registration API client", () => {
+  it("posts the exact registration input with the bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(operator), { status: 201 }));
+    await expect(registerOperator("access-token", registrationInput)).resolves.toEqual(operator);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/register`, {
+      method: "POST",
+      body: JSON.stringify(registrationInput),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+  });
+
+  it("rejects malformed successful registration responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: operator.id, name: operator.name }), { status: 201 }),
+    );
+    await expect(registerOperator("access-token", registrationInput)).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it.each([
+    [400, "VALIDATION_ERROR"],
+    [401, "UNAUTHORIZED"],
+    [403, "ACCOUNT_INACTIVE"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces %i registration responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(registerOperator("access-token", registrationInput)).rejects.toMatchObject({
+      status,
+      code,
+    });
+  });
+
+  it("surfaces registration network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(registerOperator("access-token", registrationInput)).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
 
 describe("operator profile API client", () => {
   it("gets the operator profile with the bearer token", async () => {

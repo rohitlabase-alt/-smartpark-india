@@ -2,6 +2,7 @@ import {
   OPERATOR_STATUSES,
   PARKING_SLOT_STATUSES,
   type Operator,
+  type OperatorRegisterRequest,
   type ParkingFacility,
   type ParkingSlot,
 } from "@smartpark/shared";
@@ -74,11 +75,20 @@ function isSlot(value: unknown): value is ParkingSlot {
   );
 }
 
-async function request(path: string, accessToken: string): Promise<unknown> {
+async function request(
+  path: string,
+  accessToken: string,
+  options: RequestInit = {},
+): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
-      headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}` },
+      ...options,
+      headers: {
+        Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        Authorization: `Bearer ${accessToken}`,
+      },
     });
   } catch {
     throw new AuthApiError("Unable to reach the operator service.");
@@ -104,6 +114,20 @@ async function request(path: string, accessToken: string): Promise<unknown> {
     throw new AuthApiError(message, response.status, code);
   }
 
+  return body;
+}
+
+export async function registerOperator(
+  accessToken: string,
+  input: OperatorRegisterRequest,
+): Promise<Operator> {
+  const body = await request("/operators/register", accessToken, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!isOperator(body)) {
+    throw new AuthApiError("The operator registration response was incomplete or malformed.");
+  }
   return body;
 }
 

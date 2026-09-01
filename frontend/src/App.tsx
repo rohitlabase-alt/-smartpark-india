@@ -10,12 +10,14 @@ import {
   type BookingResponse,
   type FacilityAvailabilityResponse,
   type LoginRequest,
+  type Operator,
   type ParkingSlot,
   type Reservation,
   type RegisterRequest,
 } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import OperatorDashboard from "./OperatorDashboard";
+import OperatorRegistration from "./OperatorRegistration";
 import { fetchFacilityAvailability } from "./api/availability";
 import { cancelReservation, createReservation, fetchReservations } from "./api/reservations";
 import {
@@ -32,7 +34,8 @@ import {
 } from "./api/auth";
 
 type ViewState = "initial" | "loading" | "success" | "error";
-type Screen = "availability" | "login" | "register" | "reservations" | "operator";
+type Screen =
+  "availability" | "login" | "register" | "reservations" | "operator" | "operator-registration";
 type SessionState = "loading" | "authenticated" | "unauthenticated";
 type ReservationsState = "initial" | "loading" | "success" | "error";
 
@@ -219,6 +222,21 @@ export default function App() {
     setScreen("operator");
   }
 
+  async function handleOperatorRegistered(_operator: Operator): Promise<void> {
+    if (!session) return;
+    const user = await getCurrentUser(session.accessToken);
+    if (!user.roles.includes("PARKING_OPERATOR")) {
+      throw new AuthApiError(
+        "The server did not assign operator access after registration.",
+        403,
+        "FORBIDDEN",
+      );
+    }
+    const updatedSession = { ...session, user };
+    setMemorySession(updatedSession);
+    setSession(updatedSession);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedId = facilityId.trim();
@@ -317,6 +335,17 @@ export default function App() {
                     Operator Dashboard
                   </button>
                 )}
+                {!session.user.roles.includes("PARKING_OPERATOR") && (
+                  <button
+                    className={
+                      screen === "operator-registration" ? "nav-button active" : "nav-button"
+                    }
+                    onClick={() => setScreen("operator-registration")}
+                    type="button"
+                  >
+                    Register as Operator
+                  </button>
+                )}
                 <span className="user-label">{session.user.fullName || session.user.email}</span>
                 <button className="nav-button" onClick={() => void handleLogout()} type="button">
                   Sign out
@@ -390,6 +419,12 @@ export default function App() {
           session &&
           session.user.roles.includes("PARKING_OPERATOR") ? (
           <OperatorDashboard accessToken={session.accessToken} />
+        ) : screen === "operator-registration" && sessionState === "authenticated" && session ? (
+          <OperatorRegistration
+            accessToken={session.accessToken}
+            onOpenDashboard={handleOpenOperatorDashboard}
+            onRegistered={handleOperatorRegistered}
+          />
         ) : (
           <>
             <section className="intro" aria-labelledby="page-title">
