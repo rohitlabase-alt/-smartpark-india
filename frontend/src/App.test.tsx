@@ -3,6 +3,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
+
 const response = {
   facilityId: "PUN-000001",
   totalSlots: 2,
@@ -74,7 +78,9 @@ describe("public availability screen", () => {
   it("renders the initial state with accessible controls", () => {
     expect(container.querySelector("h1")?.textContent).toContain("SmartPark India");
     expect(container.querySelector("label")?.textContent).toBe("Facility ID");
-    expect(container.querySelector("button")?.textContent).toContain("Check availability");
+    expect(container.querySelector(".search-controls button")?.textContent).toContain(
+      "Check availability",
+    );
     expect(container.textContent).toContain("Enter a facility ID");
   });
 
@@ -88,7 +94,7 @@ describe("public availability screen", () => {
 
     await submitFacilityId("1");
     expect(container.textContent).toContain("Loading facility availability...");
-    expect(container.querySelector("button")?.hasAttribute("disabled")).toBe(true);
+    expect(container.querySelector(".search-controls button")?.hasAttribute("disabled")).toBe(true);
 
     resolveRequest(new Response(JSON.stringify(response), { status: 200 }));
     await act(async () => {

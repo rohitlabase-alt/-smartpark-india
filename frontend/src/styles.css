@@ -44,6 +44,13 @@ input {
   margin: 0 auto;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .banner {
   display: flex;
   align-items: center;
@@ -63,6 +70,38 @@ input {
 .banner p + p {
   border-left: 1px solid var(--line);
   padding-left: 0.8rem;
+}
+
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.nav-button {
+  padding: 0.5rem 0.7rem;
+  color: var(--brand-dark);
+  background: transparent;
+  font-size: 0.8rem;
+}
+.nav-button:hover:not(:disabled),
+.nav-button.active {
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
+.user-label {
+  max-width: 13rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-notice {
+  margin: 1.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .intro {
@@ -175,6 +214,49 @@ button:disabled {
 .notice.error {
   color: #9d3124;
   background: var(--danger);
+}
+.auth-card {
+  width: min(100%, 30rem);
+  margin: 2.5rem auto 0;
+  border: 1px solid var(--line);
+  border-radius: 1.25rem;
+  padding: 1.5rem;
+  background: var(--card);
+  box-shadow: 0 18px 45px rgba(26, 58, 44, 0.06);
+}
+.auth-card h2 {
+  margin: 0;
+  font-size: 1.7rem;
+  letter-spacing: -0.04em;
+}
+.auth-form {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1.4rem;
+}
+.auth-form label {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.auth-form input {
+  width: 100%;
+  border: 1px solid #b9c9bf;
+  border-radius: 0.7rem;
+  padding: 0.8rem 0.9rem;
+  color: var(--ink);
+  background: #fbfdfb;
+}
+.auth-form input:focus {
+  outline: 3px solid rgba(23, 107, 80, 0.2);
+  border-color: var(--brand);
+}
+.auth-form button {
+  margin-top: 0.8rem;
+}
+.optional {
+  font-weight: 400;
 }
 .results {
   padding: 1.5rem;
@@ -303,6 +385,13 @@ button:disabled {
   }
   .intro {
     padding-top: 3.5rem;
+  }
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .nav {
+    justify-content: flex-start;
   }
   .search-card {
     grid-template-columns: 1fr;
