@@ -109,6 +109,12 @@ function setField(id: string, value: string, eventName = "input") {
   });
 }
 
+function buttonWithText(text: string): HTMLButtonElement {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.includes(text),
+  )!;
+}
+
 beforeEach(() => {
   clearMemorySession();
   container = document.createElement("div");
@@ -209,6 +215,235 @@ describe("read-only operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("has no slots to display");
+  });
+
+  it("opens the selected facility edit form with authoritative values", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+
+    expect(container.querySelector<HTMLInputElement>("#edit-facility-name")?.value).toBe(
+      facility.name,
+    );
+    expect(container.querySelector<HTMLSelectElement>("#edit-facility-type")?.value).toBe(
+      facility.type,
+    );
+    expect(container.querySelector<HTMLInputElement>("#edit-facility-city")?.value).toBe(
+      facility.city,
+    );
+    expect(container.querySelector<HTMLInputElement>("#edit-facility-capacity")?.value).toBe(
+      String(facility.capacity),
+    );
+    expect(container.querySelector("#edit-facility-is-active")).toBeNull();
+    expect(container.querySelector("#edit-facility-verification-status")).toBeNull();
+    expect(container.querySelector("#edit-facility-operator-id")).toBeNull();
+  });
+
+  it("validates edit fields before making a PATCH request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+
+    setField("edit-facility-name", " ");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Name, facility type, and city are required");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    setField("edit-facility-name", facility.name);
+    setField("edit-facility-capacity", "0");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Capacity must be a whole number");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    setField("edit-facility-capacity", String(facility.capacity));
+    setField("edit-facility-latitude", "91");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Enter valid latitude and longitude");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("updates only the selected facility from the authoritative PATCH response", async () => {
+    const updatedFacility = {
+      ...facility,
+      name: "Updated Lot",
+      city: "Mumbai",
+      capacity: 90,
+      updatedAt: "2026-09-01T11:00:00.000Z",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+    setField("edit-facility-name", "Updated Lot");
+    setField("edit-facility-city", "Mumbai");
+    setField("edit-facility-capacity", "90");
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(updatedFacility), { status: 200 }));
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]![0]).toContain("/operators/me/facilities/4");
+    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({
+        name: "Updated Lot",
+        type: "private",
+        city: "Mumbai",
+        capacity: 90,
+        state: "Maharashtra",
+        area: "Koregaon Park",
+      }),
+    });
+    expect(container.textContent).toContain("Updated Lot");
+    expect(container.textContent).toContain("updated successfully");
+    expect(container.textContent).toContain("Camp Lot");
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain(
+      "Updated Lot",
+    );
+    expect(container.querySelector(".facility-edit-form")).toBeNull();
+  });
+
+  it("shows saving state and prevents duplicate PATCH submissions", async () => {
+    let resolveUpdate!: (response: Response) => void;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    const form = container.querySelector<HTMLFormElement>(".facility-edit-form")!;
+    await act(async () => form.requestSubmit());
+    expect(container.textContent).toContain("Saving...");
+    expect(container.querySelector<HTMLButtonElement>("button[type=submit]")?.disabled).toBe(true);
+    await act(async () => form.requestSubmit());
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    resolveUpdate(new Response(JSON.stringify(facility), { status: 200 }));
+    await settle();
+  });
+
+  it.each([
+    [400, "400 failure", "VALIDATION_ERROR"],
+    [401, "Your operator session is no longer authorized", "UNAUTHORIZED"],
+    [403, "Your account is not authorized", "FORBIDDEN"],
+    [404, "404 failure", "FACILITY_NOT_FOUND"],
+    [409, "409 failure", "CONFLICT"],
+  ])("shows facility update error %i", async (status, message, code) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code, message: `${status} failure` } }), { status }),
+      );
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.querySelector<HTMLInputElement>("#edit-facility-name")?.value).toBe(
+      facility.name,
+    );
+  });
+
+  it("keeps edit state protected when selection changes before PATCH resolves", async () => {
+    let resolveUpdate!: (response: Response) => void;
+    const secondSlot = { ...slot, id: 10, facilityId: secondFacility.id, slotCode: "B01" };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([secondSlot]), { status: 200 }));
+    const camp = Array.from(container.querySelectorAll<HTMLButtonElement>(".facility-item")).find(
+      (button) => button.textContent?.includes("Camp Lot"),
+    )!;
+    await act(async () => camp.click());
+    await settle();
+    resolveUpdate(
+      new Response(JSON.stringify({ ...facility, name: "Stale Update" }), { status: 200 }),
+    );
+    await settle();
+
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain("Camp Lot");
+    expect(container.textContent).not.toContain("Stale Update");
+    expect(container.textContent).toContain("B01");
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("ignores a stale facility update error after selection changes", async () => {
+    let rejectUpdate!: (reason: Error) => void;
+    const secondSlot = { ...slot, id: 10, facilityId: secondFacility.id, slotCode: "B01" };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit facility").click());
+    fetchMock.mockReturnValueOnce(
+      new Promise((_, reject) => {
+        rejectUpdate = reject;
+      }),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
+    );
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([secondSlot]), { status: 200 }));
+    const camp = Array.from(container.querySelectorAll<HTMLButtonElement>(".facility-item")).find(
+      (button) => button.textContent?.includes("Camp Lot"),
+    )!;
+    await act(async () => camp.click());
+    await settle();
+    rejectUpdate(new Error("stale failure"));
+    await settle();
+
+    expect(container.querySelector(".facility-item.selected")?.textContent).toContain("Camp Lot");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("B01");
   });
 
   it("validates and creates a facility without sending client-owned fields", async () => {
@@ -365,9 +600,10 @@ describe("read-only operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
-    for (const text of ["Edit", "Delete", "Save", "Update"]) {
+    for (const text of ["Delete", "Save", "Update"]) {
       expect(container.textContent).not.toContain(text);
     }
     expect(container.textContent).toContain("Create facility");
+    expect(container.textContent).toContain("Edit facility");
   });
 });

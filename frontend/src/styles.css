@@ -173,19 +173,24 @@ input {
 .operator-panel .notice {
   margin-top: 1rem;
 }
-.facility-create-form {
+.facility-create-form,
+.facility-edit-form {
   display: grid;
   gap: 0.55rem;
   margin-top: 1rem;
 }
-.facility-create-form label {
+.facility-create-form label,
+.facility-edit-form label {
   color: var(--muted);
   font-size: 0.82rem;
   font-weight: 700;
 }
 .facility-create-form input,
 .facility-create-form select,
-.facility-create-form textarea {
+.facility-create-form textarea,
+.facility-edit-form input,
+.facility-edit-form select,
+.facility-edit-form textarea {
   width: 100%;
   border: 1px solid #b9c9bf;
   border-radius: 0.7rem;
@@ -193,7 +198,8 @@ input {
   color: var(--ink);
   background: #fbfdfb;
 }
-.facility-create-form textarea {
+.facility-create-form textarea,
+.facility-edit-form textarea {
   min-height: 5rem;
   resize: vertical;
 }

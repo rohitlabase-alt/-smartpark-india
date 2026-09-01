@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   FACILITY_TYPES,
   type CreateFacilityRequest,
@@ -6,12 +6,14 @@ import {
   type Operator,
   type ParkingFacility,
   type ParkingSlot,
+  type UpdateFacilityRequest,
 } from "@smartpark/shared";
 import {
   createOperatorFacility,
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorMe,
+  updateOperatorFacility,
 } from "./api/operators";
 import { AuthApiError } from "./api/auth";
 
@@ -58,6 +60,21 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [facilityLongitude, setFacilityLongitude] = useState("");
   const [facilityCapacity, setFacilityCapacity] = useState("");
   const [facilityDescription, setFacilityDescription] = useState("");
+  const [editFacilityId, setEditFacilityId] = useState<number>();
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [editSuccess, setEditSuccess] = useState("");
+  const [editFacilityName, setEditFacilityName] = useState("");
+  const [editFacilityType, setEditFacilityType] = useState<FacilityType | "">("");
+  const [editFacilityCity, setEditFacilityCity] = useState("");
+  const [editFacilityState, setEditFacilityState] = useState("");
+  const [editFacilityArea, setEditFacilityArea] = useState("");
+  const [editFacilityAddress, setEditFacilityAddress] = useState("");
+  const [editFacilityLatitude, setEditFacilityLatitude] = useState("");
+  const [editFacilityLongitude, setEditFacilityLongitude] = useState("");
+  const [editFacilityCapacity, setEditFacilityCapacity] = useState("");
+  const [editFacilityDescription, setEditFacilityDescription] = useState("");
+  const facilityEditRequestId = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -71,6 +88,9 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlots([]);
     setSlotsState("success");
     setSlotsError("");
+    setEditFacilityId(undefined);
+    setEditSubmitting(false);
+    facilityEditRequestId.current += 1;
 
     void getOperatorMe(accessToken).then(
       (result) => {
@@ -134,6 +154,102 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   }, [accessToken, selectedFacilityId]);
 
   const selectedFacility = facilities.find((facility) => facility.id === selectedFacilityId);
+
+  function handleSelectFacility(facilityId: number): void {
+    facilityEditRequestId.current += 1;
+    setSelectedFacilityId(facilityId);
+    setEditFacilityId(undefined);
+    setEditSubmitting(false);
+    setEditError("");
+    setEditSuccess("");
+  }
+
+  function handleOpenEdit(facility: ParkingFacility): void {
+    facilityEditRequestId.current += 1;
+    setEditFacilityId(facility.id);
+    setEditSubmitting(false);
+    setEditError("");
+    setEditSuccess("");
+    setEditFacilityName(facility.name);
+    setEditFacilityType(facility.type);
+    setEditFacilityCity(facility.city);
+    setEditFacilityState(facility.state ?? "");
+    setEditFacilityArea(facility.area ?? "");
+    setEditFacilityAddress(facility.address ?? "");
+    setEditFacilityLatitude(facility.latitude === null ? "" : String(facility.latitude));
+    setEditFacilityLongitude(facility.longitude === null ? "" : String(facility.longitude));
+    setEditFacilityCapacity(String(facility.capacity));
+    setEditFacilityDescription(facility.description ?? "");
+  }
+
+  function handleCloseEdit(): void {
+    facilityEditRequestId.current += 1;
+    setEditFacilityId(undefined);
+    setEditSubmitting(false);
+    setEditError("");
+  }
+
+  async function handleUpdateFacility(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (editSubmitting || editFacilityId === undefined) return;
+    setEditError("");
+    setEditSuccess("");
+    const capacity = Number(editFacilityCapacity);
+    if (
+      !editFacilityName.trim() ||
+      !editFacilityType ||
+      !FACILITY_TYPES.includes(editFacilityType as FacilityType) ||
+      !editFacilityCity.trim()
+    ) {
+      setEditError("Name, facility type, and city are required.");
+      return;
+    }
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 100000) {
+      setEditError("Capacity must be a whole number between 1 and 100,000.");
+      return;
+    }
+    const latitude = editFacilityLatitude.trim() ? Number(editFacilityLatitude) : undefined;
+    const longitude = editFacilityLongitude.trim() ? Number(editFacilityLongitude) : undefined;
+    if (
+      (latitude !== undefined && (!Number.isFinite(latitude) || latitude < -90 || latitude > 90)) ||
+      (longitude !== undefined &&
+        (!Number.isFinite(longitude) || longitude < -180 || longitude > 180))
+    ) {
+      setEditError("Enter valid latitude and longitude coordinates.");
+      return;
+    }
+    const request: UpdateFacilityRequest = {
+      name: editFacilityName.trim(),
+      type: editFacilityType,
+      city: editFacilityCity.trim(),
+      capacity,
+    };
+    if (editFacilityState.trim()) request.state = editFacilityState.trim();
+    if (editFacilityArea.trim()) request.area = editFacilityArea.trim();
+    if (editFacilityAddress.trim()) request.address = editFacilityAddress.trim();
+    if (editFacilityDescription.trim()) request.description = editFacilityDescription.trim();
+    if (latitude !== undefined) request.latitude = latitude;
+    if (longitude !== undefined) request.longitude = longitude;
+
+    const facilityId = editFacilityId;
+    const requestId = ++facilityEditRequestId.current;
+    setEditSubmitting(true);
+    try {
+      const updated = await updateOperatorFacility(accessToken, facilityId, request);
+      if (requestId !== facilityEditRequestId.current) return;
+      setFacilities((current) =>
+        current.map((facility) => (facility.id === updated.id ? updated : facility)),
+      );
+      setSelectedFacilityId(updated.id);
+      setEditFacilityId(undefined);
+      setEditSuccess(`${updated.name} was updated successfully.`);
+    } catch (cause) {
+      if (requestId !== facilityEditRequestId.current) return;
+      setEditError(operatorError(cause));
+    } finally {
+      if (requestId === facilityEditRequestId.current) setEditSubmitting(false);
+    }
+  }
 
   async function handleCreateFacility(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -381,7 +497,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                     facility.id === selectedFacilityId ? "facility-item selected" : "facility-item"
                   }
                   key={facility.id}
-                  onClick={() => setSelectedFacilityId(facility.id)}
+                  onClick={() => handleSelectFacility(facility.id)}
                   type="button"
                 >
                   <strong>{facility.name}</strong>
@@ -404,7 +520,110 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
               <h3 id="operator-slots-title">{selectedFacility.name} slots</h3>
             </div>
             <span className="reservation-count">Capacity {selectedFacility.capacity}</span>
+            {editFacilityId !== selectedFacility.id && (
+              <button type="button" onClick={() => handleOpenEdit(selectedFacility)}>
+                Edit facility
+              </button>
+            )}
           </div>
+          {editFacilityId === selectedFacility.id && (
+            <form
+              className="facility-edit-form"
+              onSubmit={(event) => void handleUpdateFacility(event)}
+            >
+              <div className="section-heading compact-heading">
+                <h4>Edit facility metadata</h4>
+                <button type="button" onClick={handleCloseEdit}>
+                  Cancel
+                </button>
+              </div>
+              <label htmlFor="edit-facility-name">Name</label>
+              <input
+                id="edit-facility-name"
+                value={editFacilityName}
+                onChange={(event) => setEditFacilityName(event.target.value)}
+              />
+              <label htmlFor="edit-facility-type">Facility type</label>
+              <select
+                id="edit-facility-type"
+                value={editFacilityType}
+                onChange={(event) => setEditFacilityType(event.target.value as FacilityType)}
+              >
+                <option value="">Select a type</option>
+                {FACILITY_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {label(type)}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="edit-facility-city">City</label>
+              <input
+                id="edit-facility-city"
+                value={editFacilityCity}
+                onChange={(event) => setEditFacilityCity(event.target.value)}
+              />
+              <label htmlFor="edit-facility-state">State</label>
+              <input
+                id="edit-facility-state"
+                value={editFacilityState}
+                onChange={(event) => setEditFacilityState(event.target.value)}
+              />
+              <label htmlFor="edit-facility-area">Area</label>
+              <input
+                id="edit-facility-area"
+                value={editFacilityArea}
+                onChange={(event) => setEditFacilityArea(event.target.value)}
+              />
+              <label htmlFor="edit-facility-address">Address</label>
+              <input
+                id="edit-facility-address"
+                value={editFacilityAddress}
+                onChange={(event) => setEditFacilityAddress(event.target.value)}
+              />
+              <label htmlFor="edit-facility-latitude">Latitude</label>
+              <input
+                id="edit-facility-latitude"
+                type="number"
+                step="any"
+                value={editFacilityLatitude}
+                onChange={(event) => setEditFacilityLatitude(event.target.value)}
+              />
+              <label htmlFor="edit-facility-longitude">Longitude</label>
+              <input
+                id="edit-facility-longitude"
+                type="number"
+                step="any"
+                value={editFacilityLongitude}
+                onChange={(event) => setEditFacilityLongitude(event.target.value)}
+              />
+              <label htmlFor="edit-facility-capacity">Capacity</label>
+              <input
+                id="edit-facility-capacity"
+                type="number"
+                value={editFacilityCapacity}
+                onChange={(event) => setEditFacilityCapacity(event.target.value)}
+              />
+              <label htmlFor="edit-facility-description">Description</label>
+              <textarea
+                id="edit-facility-description"
+                value={editFacilityDescription}
+                onChange={(event) => setEditFacilityDescription(event.target.value)}
+              />
+              {editError && (
+                <p className="notice error" role="alert">
+                  {editError}
+                </p>
+              )}
+              <button type="submit" disabled={editSubmitting}>
+                {editSubmitting ? "Saving..." : "Save facility"}
+              </button>
+            </form>
+          )}
+          {editSuccess && (
+            <p className="notice success" role="status">
+              {editSuccess}
+            </p>
+          )}
           {slotsState === "loading" && <p className="notice">Loading slots...</p>}
           {slotsState === "error" && (
             <p className="notice error" role="alert">

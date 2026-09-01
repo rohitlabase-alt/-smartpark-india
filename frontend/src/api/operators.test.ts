@@ -7,6 +7,7 @@ import {
   getOperatorMe,
   createOperatorFacility,
   registerOperator,
+  updateOperatorFacility,
 } from "./operators";
 
 const operator: Operator = {
@@ -64,6 +65,18 @@ const facilityInput = {
   city: "Pune",
   state: "Maharashtra",
   capacity: 80,
+};
+const facilityUpdateInput = {
+  name: "Updated Lot",
+  type: "off-street" as const,
+  city: "Mumbai",
+  state: "Maharashtra",
+  area: "Andheri",
+  address: "2 Main Road",
+  latitude: 19.1197,
+  longitude: 72.8468,
+  capacity: 90,
+  description: "Updated description",
 };
 
 afterEach(() => vi.restoreAllMocks());
@@ -156,6 +169,67 @@ describe("operator profile API client", () => {
 });
 
 describe("operator facilities API client", () => {
+  it("patches a facility with the exact supported fields and bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(facility), { status: 200 }));
+    await expect(updateOperatorFacility("access-token", 42, facilityUpdateInput)).resolves.toEqual(
+      facility,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/facilities/42`, {
+      method: "PATCH",
+      body: JSON.stringify(facilityUpdateInput),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+    const sentBody = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody).not.toHaveProperty("operatorId");
+    expect(sentBody).not.toHaveProperty("ownership");
+    expect(sentBody).not.toHaveProperty("verificationStatus");
+    expect(sentBody).not.toHaveProperty("isActive");
+  });
+
+  it.each([
+    [400, "VALIDATION_ERROR"],
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [404, "FACILITY_NOT_FOUND"],
+    [409, "CONFLICT"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces facility update response %i", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(
+      updateOperatorFacility("access-token", 42, facilityUpdateInput),
+    ).rejects.toMatchObject({
+      status,
+      code,
+    });
+  });
+
+  it("rejects malformed update responses and maps network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: facility.id }), { status: 200 }),
+    );
+    await expect(updateOperatorFacility("access-token", 42, facilityUpdateInput)).rejects.toThrow(
+      "incomplete or malformed",
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(
+      updateOperatorFacility("access-token", 42, facilityUpdateInput),
+    ).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+
   it("posts the facility input with the bearer token", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

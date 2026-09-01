@@ -6,6 +6,7 @@ import {
   type OperatorRegisterRequest,
   type ParkingFacility,
   type ParkingSlot,
+  type UpdateFacilityRequest,
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 
@@ -140,6 +141,25 @@ export async function createOperatorFacility(
     method: "POST",
     body: JSON.stringify(input),
   });
+  if (!isFacility(body)) {
+    throw new AuthApiError("The facility response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function updateOperatorFacility(
+  accessToken: string,
+  facilityId: number,
+  input: UpdateFacilityRequest,
+): Promise<ParkingFacility> {
+  const body = await request(
+    `/operators/me/facilities/${encodeURIComponent(facilityId)}`,
+    accessToken,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    },
+  );
   if (!isFacility(body)) {
     throw new AuthApiError("The facility response was incomplete or malformed.");
   }
