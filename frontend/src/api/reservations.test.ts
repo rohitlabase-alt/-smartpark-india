@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BookingListResponse, BookingResponse, PublicUser } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
-import { createReservation, fetchReservations } from "./reservations";
+import { cancelReservation, createReservation, fetchReservations } from "./reservations";
 
 const user: PublicUser = {
   id: 7,
@@ -46,6 +46,69 @@ const createInput = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("reservations API client", () => {
+  it("posts cancellation with the bearer token and empty JSON body", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(createResponse), { status: 200 }));
+
+    await expect(cancelReservation("access-token", "BKG-ABC123")).resolves.toEqual(createResponse);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/reservations/BKG-ABC123/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+  });
+
+  it("surfaces cancellation API errors", async () => {
+    const errors = [
+      [401, "UNAUTHORIZED", "Authentication required"],
+      [404, "BOOKING_NOT_FOUND", "Booking not found"],
+      [409, "ALREADY_CANCELLED", "This booking is already cancelled"],
+      [422, "CANNOT_CANCEL_COMPLETED", "Completed bookings cannot be cancelled"],
+      [500, "INTERNAL_ERROR", "Unexpected server error"],
+    ] as const;
+
+    for (const [status, code, message] of errors) {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { code, message } }), { status }),
+        );
+      await expect(cancelReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
+        name: "AuthApiError",
+        status,
+        code,
+        message,
+      } satisfies Partial<AuthApiError>);
+      fetchMock.mockRestore();
+    }
+  });
+
+  it("rejects malformed successful cancellation responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservation: { reservationCode: "BKG-INCOMPLETE" } }), {
+        status: 200,
+      }),
+    );
+
+    await expect(cancelReservation("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it("surfaces cancellation network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Network unavailable"));
+
+    await expect(cancelReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the reservations service.",
+    });
+  });
+
   it("posts a reservation with the bearer access token and exact JSON body", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

@@ -129,3 +129,25 @@ export async function createReservation(
 
   return body;
 }
+
+export async function cancelReservation(
+  accessToken: string,
+  reservationCode: string,
+): Promise<BookingResponse> {
+  const body = await requestJson(
+    `/reservations/${encodeURIComponent(reservationCode)}/cancel`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({}),
+    },
+    "Unable to reach the reservations service.",
+    "Unable to cancel your reservation.",
+  );
+
+  if (!isBookingResponse(body)) {
+    throw new AuthApiError("The cancellation response was incomplete or malformed.");
+  }
+
+  return body;
+}

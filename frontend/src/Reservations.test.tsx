@@ -44,6 +44,18 @@ const reservation = {
   updatedAt: "2026-09-01T10:05:00.000Z",
 };
 
+const cancelledReservation = {
+  ...reservation,
+  state: "CANCELLED" as const,
+  cancelledAt: "2026-09-01T10:10:00.000Z",
+  updatedAt: "2026-09-01T10:10:00.000Z",
+};
+
+const completedReservation = {
+  ...reservation,
+  state: "COMPLETED" as const,
+};
+
 const availability = {
   facilityId: "PUN-000004",
   totalSlots: 4,
@@ -119,6 +131,27 @@ async function openReservations() {
     if (!button) throw new Error("My Reservations button not found");
     button.click();
   });
+}
+
+async function clickButton(label: string) {
+  await act(async () => {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (candidate) => candidate.textContent?.includes(label),
+    );
+    if (!button) throw new Error(`Button not found: ${label}`);
+    button.click();
+  });
+}
+
+async function renderReservationList(items: unknown[]) {
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ reservations: items }), { status: 200 }));
+  await renderAuthenticatedApp();
+  await openReservations();
+  await settleAsyncWork();
+  return fetchMock;
 }
 
 function setInput(id: string, value: string) {
@@ -215,6 +248,182 @@ describe("My Reservations screen", () => {
 
     expect(container.querySelector(".reservation-creation")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows cancellation only for confirmed reservations", async () => {
+    await renderReservationList([reservation, cancelledReservation, completedReservation]);
+
+    expect(container.querySelectorAll(".cancel-reservation-button")).toHaveLength(1);
+    expect(container.textContent).toContain("CANCELLED");
+    expect(container.textContent).toContain("COMPLETED");
+  });
+
+  it("opens an accessible confirmation without immediately sending a request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+
+    expect(container.textContent).toContain("Cancel this reservation?");
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(container.textContent).toContain("Facility 4");
+    expect(container.textContent).toContain("Slot 9");
+    expect(container.textContent).toContain("Payment and refunds are not implemented.");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes cancellation confirmation without sending a request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    fetchMock
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+    await clickButton("Keep Reservation");
+
+    expect(container.textContent).not.toContain("Cancel this reservation?");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("confirms cancellation once and updates the reservation authoritatively", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: cancelledReservation }), { status: 200 }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+    await clickButton("Confirm Cancellation");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]![0]).toContain("/reservations/BKG-ABC123/cancel");
+    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(container.textContent).toContain("CANCELLED");
+    expect(container.textContent).not.toContain("Cancel Reservation");
+    expect(container.textContent).toContain("Reservation BKG-ABC123 has been cancelled.");
+  });
+
+  it("shows cancellation loading state and prevents duplicate requests", async () => {
+    let resolveCancellation!: (value: Response) => void;
+    const cancellationRequest = new Promise<Response>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      )
+      .mockReturnValueOnce(cancellationRequest);
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+    await clickButton("Confirm Cancellation");
+
+    expect(container.textContent).toContain("Cancelling reservation...");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const confirmButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Cancelling..."),
+    );
+    expect(confirmButton?.disabled).toBe(true);
+
+    confirmButton?.click();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    resolveCancellation(
+      new Response(JSON.stringify({ reservation: cancelledReservation }), { status: 200 }),
+    );
+    await settleAsyncWork();
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED", "You are not authorized to cancel this reservation."],
+    [404, "BOOKING_NOT_FOUND", "This reservation could not be found."],
+    [
+      422,
+      "CANNOT_CANCEL_COMPLETED",
+      "This reservation has already been completed and cannot be cancelled.",
+    ],
+  ] as const)("shows %s cancellation errors", async (status, code, message) => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { code, message: "Backend error" } }), { status }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+    await clickButton("Confirm Cancellation");
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(message);
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes the list when the backend reports an already-cancelled reservation", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { code: "ALREADY_CANCELLED", message: "Already cancelled" } }),
+          { status: 409 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservations: [cancelledReservation] }), { status: 200 }),
+      );
+    await renderAuthenticatedApp();
+    await openReservations();
+    await settleAsyncWork();
+    await clickButton("Cancel Reservation");
+    await clickButton("Confirm Cancellation");
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]![0]).toContain("/reservations");
+    expect(container.textContent).toContain("CANCELLED");
+    expect(container.textContent).not.toContain("Cancel Reservation");
+    expect(container.textContent).toContain("This reservation is already cancelled.");
+  });
+
+  it("shows a network error and keeps the reservation available", async () => {
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
+    await clickButton("Cancel Reservation");
+    await clickButton("Confirm Cancellation");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Unable to reach the reservations service.",
+    );
+    expect(container.textContent).toContain("CONFIRMED");
   });
 
   it("validates the reservation time range before creating", async () => {

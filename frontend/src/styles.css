@@ -161,6 +161,46 @@ input {
   color: var(--ink);
   font-size: 0.9rem;
 }
+.cancel-reservation-button {
+  margin-top: 1.25rem;
+  color: #9d3124;
+  background: var(--danger);
+}
+.cancellation-confirmation {
+  margin-top: 1.25rem;
+  border: 1px solid #e7c2bd;
+  border-radius: 0.9rem;
+  padding: 1rem 1.1rem;
+  background: #fff8f6;
+}
+.cancellation-confirmation h4 {
+  margin: 0;
+  color: #76251c;
+  font-size: 1rem;
+}
+.cancellation-confirmation p {
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.cancellation-progress {
+  font-weight: 700;
+}
+.cancellation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.secondary-button {
+  color: var(--brand-dark);
+  background: white;
+}
+.notice.success {
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
 .session-notice {
   margin: 1.25rem 0 0;
   color: var(--muted);

@@ -16,7 +16,7 @@ import {
 } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import { fetchFacilityAvailability } from "./api/availability";
-import { createReservation, fetchReservations } from "./api/reservations";
+import { cancelReservation, createReservation, fetchReservations } from "./api/reservations";
 import {
   AuthApiError,
   clearMemorySession,
@@ -75,6 +75,22 @@ function reservationCreationError(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Unable to create your reservation.";
 }
 
+function cancellationErrorMessage(cause: unknown): string {
+  if (cause instanceof AuthApiError) {
+    switch (cause.code) {
+      case "UNAUTHORIZED":
+        return "You are not authorized to cancel this reservation.";
+      case "BOOKING_NOT_FOUND":
+        return "This reservation could not be found.";
+      case "ALREADY_CANCELLED":
+        return "This reservation is already cancelled.";
+      case "CANNOT_CANCEL_COMPLETED":
+        return "This reservation has already been completed and cannot be cancelled.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Unable to cancel your reservation.";
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("availability");
   const [session, setSession] = useState<AuthSession>();
@@ -89,6 +105,10 @@ export default function App() {
   const [reservationsError, setReservationsError] = useState("");
   const [createdReservation, setCreatedReservation] = useState<BookingResponse>();
   const [creationError, setCreationError] = useState("");
+  const [cancellationCode, setCancellationCode] = useState<string>();
+  const [cancellationSubmitting, setCancellationSubmitting] = useState(false);
+  const [cancellationError, setCancellationError] = useState("");
+  const [cancellationSuccess, setCancellationSuccess] = useState("");
 
   useEffect(() => {
     const existing = getMemorySession();
@@ -125,6 +145,10 @@ export default function App() {
       setSession(undefined);
       setSessionState("unauthenticated");
       setScreen("availability");
+      setCancellationCode(undefined);
+      setCancellationSubmitting(false);
+      setCancellationError("");
+      setCancellationSuccess("");
       setAuthError("Your session has expired. Please sign in again.");
     }
   }
@@ -169,6 +193,9 @@ export default function App() {
     setReservationsState("loading");
     setReservationsError("");
     setReservations([]);
+    setCancellationCode(undefined);
+    setCancellationError("");
+    setCancellationSuccess("");
     try {
       const result = await fetchReservations(session.accessToken);
       setReservations(result.reservations);
@@ -206,6 +233,49 @@ export default function App() {
       setAvailability(undefined);
       setError(cause instanceof Error ? cause.message : "Unable to load availability.");
       setViewState("error");
+    }
+  }
+
+  function handleRequestCancellation(code: string): void {
+    if (cancellationSubmitting) return;
+    setCancellationCode(code);
+    setCancellationError("");
+    setCancellationSuccess("");
+  }
+
+  function handleKeepReservation(): void {
+    if (cancellationSubmitting) return;
+    setCancellationCode(undefined);
+    setCancellationError("");
+  }
+
+  async function handleConfirmCancellation(): Promise<void> {
+    if (!session || !cancellationCode || cancellationSubmitting) return;
+    setCancellationSubmitting(true);
+    setCancellationError("");
+    try {
+      const result = await cancelReservation(session.accessToken, cancellationCode);
+      setReservations((current) =>
+        current.map((reservation) =>
+          reservation.reservationCode === cancellationCode ? result.reservation : reservation,
+        ),
+      );
+      setCancellationCode(undefined);
+      setCancellationError("");
+      setCancellationSuccess(`Reservation ${cancellationCode} has been cancelled.`);
+    } catch (cause) {
+      if (cause instanceof AuthApiError && cause.code === "ALREADY_CANCELLED") {
+        try {
+          const refreshed = await fetchReservations(session.accessToken);
+          setReservations(refreshed.reservations);
+          setCancellationCode(undefined);
+        } catch {
+          // Preserve the current list if the authoritative refresh also fails.
+        }
+      }
+      setCancellationError(cancellationErrorMessage(cause));
+    } finally {
+      setCancellationSubmitting(false);
     }
   }
 
@@ -288,8 +358,15 @@ export default function App() {
         )}
         {screen === "reservations" && sessionState === "authenticated" && session ? (
           <ReservationsView
+            cancellationCode={cancellationCode}
+            cancellationError={cancellationError}
+            cancellationSuccess={cancellationSuccess}
+            cancellationSubmitting={cancellationSubmitting}
             data={{ reservations }}
             error={reservationsError}
+            onConfirmCancellation={() => void handleConfirmCancellation()}
+            onKeepReservation={handleKeepReservation}
+            onRequestCancellation={handleRequestCancellation}
             state={reservationsState}
           />
         ) : (
@@ -370,12 +447,26 @@ export default function App() {
 }
 
 function ReservationsView({
+  cancellationCode,
+  cancellationError,
+  cancellationSuccess,
+  cancellationSubmitting,
   data,
   error,
+  onConfirmCancellation,
+  onKeepReservation,
+  onRequestCancellation,
   state,
 }: {
+  cancellationCode: string | undefined;
+  cancellationError: string;
+  cancellationSuccess: string;
+  cancellationSubmitting: boolean;
   data: BookingListResponse;
   error: string;
+  onConfirmCancellation: () => void;
+  onKeepReservation: () => void;
+  onRequestCancellation: (code: string) => void;
   state: ReservationsState;
 }) {
   return (
@@ -396,13 +487,31 @@ function ReservationsView({
             {error}
           </p>
         )}
+        {cancellationSuccess && (
+          <p className="notice success" role="status">
+            {cancellationSuccess}
+          </p>
+        )}
+        {cancellationError && (
+          <p className="notice error" role="alert">
+            {cancellationError}
+          </p>
+        )}
         {state === "success" && data.reservations.length === 0 && (
           <p className="notice">You have no reservations yet.</p>
         )}
         {state === "success" && data.reservations.length > 0 && (
           <ul className="reservation-list">
             {data.reservations.map((reservation) => (
-              <ReservationCard key={reservation.id} reservation={reservation} />
+              <ReservationCard
+                cancellationActive={cancellationCode === reservation.reservationCode}
+                cancellationSubmitting={cancellationSubmitting}
+                key={reservation.id}
+                onConfirmCancellation={onConfirmCancellation}
+                onKeepReservation={onKeepReservation}
+                onRequestCancellation={onRequestCancellation}
+                reservation={reservation}
+              />
             ))}
           </ul>
         )}
@@ -411,7 +520,21 @@ function ReservationsView({
   );
 }
 
-function ReservationCard({ reservation }: { reservation: Reservation }) {
+function ReservationCard({
+  cancellationActive,
+  cancellationSubmitting,
+  onConfirmCancellation,
+  onKeepReservation,
+  onRequestCancellation,
+  reservation,
+}: {
+  cancellationActive: boolean;
+  cancellationSubmitting: boolean;
+  onConfirmCancellation: () => void;
+  onKeepReservation: () => void;
+  onRequestCancellation: (code: string) => void;
+  reservation: Reservation;
+}) {
   return (
     <li className="reservation-card">
       <div className="reservation-card-heading">
@@ -453,6 +576,52 @@ function ReservationCard({ reservation }: { reservation: Reservation }) {
           </dd>
         </div>
       </dl>
+      {reservation.state === "CONFIRMED" && !cancellationActive && (
+        <button
+          className="cancel-reservation-button"
+          onClick={() => onRequestCancellation(reservation.reservationCode)}
+          type="button"
+        >
+          Cancel Reservation
+        </button>
+      )}
+      {reservation.state === "CONFIRMED" && cancellationActive && (
+        <div
+          className="cancellation-confirmation"
+          role="group"
+          aria-labelledby={`cancel-title-${reservation.id}`}
+          aria-busy={cancellationSubmitting}
+        >
+          <h4 id={`cancel-title-${reservation.id}`}>Cancel this reservation?</h4>
+          <p>This action will cancel the reservation. Payment and refunds are not implemented.</p>
+          <p>
+            <strong>{reservation.reservationCode}</strong> · Facility {reservation.facilityId}
+            {reservation.slotId !== null ? ` · Slot ${reservation.slotId}` : ""}
+          </p>
+          <p>
+            <time dateTime={reservation.startsAt}>{formatTimestamp(reservation.startsAt)}</time> to{" "}
+            <time dateTime={reservation.endsAt}>{formatTimestamp(reservation.endsAt)}</time>
+          </p>
+          {cancellationSubmitting && (
+            <p className="cancellation-progress" aria-live="polite">
+              Cancelling reservation...
+            </p>
+          )}
+          <div className="cancellation-actions">
+            <button disabled={cancellationSubmitting} onClick={onConfirmCancellation} type="button">
+              {cancellationSubmitting ? "Cancelling..." : "Confirm Cancellation"}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={cancellationSubmitting}
+              onClick={onKeepReservation}
+              type="button"
+            >
+              Keep Reservation
+            </button>
+          </div>
+        </div>
+      )}
     </li>
   );
 }
