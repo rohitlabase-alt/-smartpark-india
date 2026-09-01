@@ -101,6 +101,97 @@ input {
 .reservations-view {
   margin: 4rem auto 0;
 }
+.operator-dashboard {
+  margin: 4rem auto 0;
+}
+.operator-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.operator-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  background: var(--card);
+  box-shadow: 0 14px 35px rgba(26, 58, 44, 0.05);
+}
+.operator-panel h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: -0.03em;
+}
+.operator-panel .notice {
+  margin-top: 1rem;
+}
+.compact-heading {
+  align-items: flex-start;
+}
+.operator-details {
+  display: grid;
+  gap: 0.8rem;
+  margin: 1.25rem 0 0;
+}
+.operator-details div {
+  display: grid;
+  gap: 0.2rem;
+}
+.operator-details dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.operator-details dd {
+  margin: 0;
+  font-size: 0.92rem;
+}
+.facility-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.facility-item {
+  display: grid;
+  gap: 0.25rem;
+  width: 100%;
+  border: 1px solid var(--line);
+  padding: 0.85rem 0.9rem;
+  color: var(--ink);
+  background: #fbfdfb;
+  text-align: left;
+}
+.facility-item:hover:not(:disabled),
+.facility-item.selected {
+  border-color: var(--brand);
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
+.facility-item span,
+.operator-slot-list span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+}
+.slots-panel {
+  margin-top: 1rem;
+}
+.operator-slot-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.operator-slot-list li {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  padding: 0.75rem 0.8rem;
+}
 .section-heading,
 .reservation-card-heading {
   display: flex;

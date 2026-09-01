@@ -15,6 +15,7 @@ import {
   type RegisterRequest,
 } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
+import OperatorDashboard from "./OperatorDashboard";
 import { fetchFacilityAvailability } from "./api/availability";
 import { cancelReservation, createReservation, fetchReservations } from "./api/reservations";
 import {
@@ -31,7 +32,7 @@ import {
 } from "./api/auth";
 
 type ViewState = "initial" | "loading" | "success" | "error";
-type Screen = "availability" | "login" | "register" | "reservations";
+type Screen = "availability" | "login" | "register" | "reservations" | "operator";
 type SessionState = "loading" | "authenticated" | "unauthenticated";
 type ReservationsState = "initial" | "loading" | "success" | "error";
 
@@ -212,6 +213,12 @@ export default function App() {
     }
   }
 
+  function handleOpenOperatorDashboard(): void {
+    if (sessionState !== "authenticated" || !session) return;
+    if (!session.user.roles.includes("PARKING_OPERATOR")) return;
+    setScreen("operator");
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedId = facilityId.trim();
@@ -301,6 +308,15 @@ export default function App() {
                 >
                   My Reservations
                 </button>
+                {session.user.roles.includes("PARKING_OPERATOR") && (
+                  <button
+                    className={screen === "operator" ? "nav-button active" : "nav-button"}
+                    onClick={handleOpenOperatorDashboard}
+                    type="button"
+                  >
+                    Operator Dashboard
+                  </button>
+                )}
                 <span className="user-label">{session.user.fullName || session.user.email}</span>
                 <button className="nav-button" onClick={() => void handleLogout()} type="button">
                   Sign out
@@ -369,6 +385,11 @@ export default function App() {
             onRequestCancellation={handleRequestCancellation}
             state={reservationsState}
           />
+        ) : screen === "operator" &&
+          sessionState === "authenticated" &&
+          session &&
+          session.user.roles.includes("PARKING_OPERATOR") ? (
+          <OperatorDashboard accessToken={session.accessToken} />
         ) : (
           <>
             <section className="intro" aria-labelledby="page-title">
