@@ -5,12 +5,16 @@ import {
   APP_VERSION,
   MODE_STATUS,
   MVP_STATUS,
+  type BookingStatus,
+  type BookingListResponse,
   type FacilityAvailabilityResponse,
   type LoginRequest,
+  type Reservation,
   type RegisterRequest,
 } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import { fetchFacilityAvailability } from "./api/availability";
+import { fetchReservations } from "./api/reservations";
 import {
   AuthApiError,
   clearMemorySession,
@@ -25,8 +29,9 @@ import {
 } from "./api/auth";
 
 type ViewState = "initial" | "loading" | "success" | "error";
-type Screen = "availability" | "login" | "register";
+type Screen = "availability" | "login" | "register" | "reservations";
 type SessionState = "loading" | "authenticated" | "unauthenticated";
+type ReservationsState = "initial" | "loading" | "success" | "error";
 
 function formatTimestamp(value: string): string {
   const date = new Date(value);
@@ -35,6 +40,10 @@ function formatTimestamp(value: string): string {
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ");
+}
+
+function bookingStatusLabel(status: BookingStatus): string {
+  return statusLabel(status);
 }
 
 export default function App() {
@@ -46,6 +55,9 @@ export default function App() {
   const [availability, setAvailability] = useState<FacilityAvailabilityResponse>();
   const [viewState, setViewState] = useState<ViewState>("initial");
   const [error, setError] = useState("");
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [reservationsState, setReservationsState] = useState<ReservationsState>("initial");
+  const [reservationsError, setReservationsError] = useState("");
 
   useEffect(() => {
     const existing = getMemorySession();
@@ -81,6 +93,7 @@ export default function App() {
       clearMemorySession();
       setSession(undefined);
       setSessionState("unauthenticated");
+      setScreen("availability");
       setAuthError("Your session has expired. Please sign in again.");
     }
   }
@@ -115,6 +128,29 @@ export default function App() {
       clearMemorySession();
       setSession(undefined);
       setSessionState("unauthenticated");
+      setScreen("availability");
+    }
+  }
+
+  async function handleOpenReservations(): Promise<void> {
+    if (sessionState !== "authenticated" || !session) return;
+    setScreen("reservations");
+    setReservationsState("loading");
+    setReservationsError("");
+    setReservations([]);
+    try {
+      const result = await fetchReservations(session.accessToken);
+      setReservations(result.reservations);
+      setReservationsState("success");
+    } catch (cause) {
+      setReservationsState("error");
+      setReservationsError(
+        cause instanceof AuthApiError && cause.status === 401
+          ? "You are not authorized to view reservations."
+          : cause instanceof Error
+            ? cause.message
+            : "Unable to load your reservations.",
+      );
     }
   }
 
@@ -155,6 +191,13 @@ export default function App() {
             </button>
             {sessionState === "authenticated" && session ? (
               <>
+                <button
+                  className={screen === "reservations" ? "nav-button active" : "nav-button"}
+                  onClick={() => void handleOpenReservations()}
+                  type="button"
+                >
+                  My Reservations
+                </button>
                 <span className="user-label">{session.user.fullName || session.user.email}</span>
                 <button className="nav-button" onClick={() => void handleLogout()} type="button">
                   Sign out
@@ -210,56 +253,158 @@ export default function App() {
             onError={setAuthError}
           />
         )}
-        <section className="intro" aria-labelledby="page-title">
-          <p className="eyebrow">
-            {MVP_STATUS} · {MODE_STATUS}
-          </p>
-          <h2 id="page-title">Know your parking before you arrive.</h2>
-          <p className="tagline">{APP_TAGLINE}</p>
-        </section>
+        {screen === "reservations" && sessionState === "authenticated" && session ? (
+          <ReservationsView
+            data={{ reservations }}
+            error={reservationsError}
+            state={reservationsState}
+          />
+        ) : (
+          <>
+            <section className="intro" aria-labelledby="page-title">
+              <p className="eyebrow">
+                {MVP_STATUS} · {MODE_STATUS}
+              </p>
+              <h2 id="page-title">Know your parking before you arrive.</h2>
+              <p className="tagline">{APP_TAGLINE}</p>
+            </section>
 
-        <section className="search-card" aria-labelledby="search-title">
-          <div>
-            <p className="section-kicker">Live availability</p>
-            <h3 id="search-title">Check a parking facility</h3>
-            <p className="muted">Availability is reported by the facility and may change.</p>
-          </div>
-          <form className="search-form" onSubmit={handleSubmit}>
-            <label htmlFor="facility-id">Facility ID</label>
-            <div className="search-controls">
-              <input
-                id="facility-id"
-                inputMode="numeric"
-                name="facilityId"
-                onChange={(event) => setFacilityId(event.target.value)}
-                placeholder="e.g. 1"
-                value={facilityId}
-              />
-              <button type="submit" disabled={viewState === "loading"}>
-                {viewState === "loading" ? "Loading..." : "Check availability"}
-              </button>
+            <section className="search-card" aria-labelledby="search-title">
+              <div>
+                <p className="section-kicker">Live availability</p>
+                <h3 id="search-title">Check a parking facility</h3>
+                <p className="muted">Availability is reported by the facility and may change.</p>
+              </div>
+              <form className="search-form" onSubmit={handleSubmit}>
+                <label htmlFor="facility-id">Facility ID</label>
+                <div className="search-controls">
+                  <input
+                    id="facility-id"
+                    inputMode="numeric"
+                    name="facilityId"
+                    onChange={(event) => setFacilityId(event.target.value)}
+                    placeholder="e.g. 1"
+                    value={facilityId}
+                  />
+                  <button type="submit" disabled={viewState === "loading"}>
+                    {viewState === "loading" ? "Loading..." : "Check availability"}
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <div className="status-region" aria-live="polite" aria-busy={viewState === "loading"}>
+              {viewState === "initial" && (
+                <p className="notice">Enter a facility ID to view its current availability.</p>
+              )}
+              {viewState === "loading" && (
+                <p className="notice">Loading facility availability...</p>
+              )}
+              {viewState === "error" && (
+                <p className="notice error" role="alert">
+                  {error}
+                </p>
+              )}
+              {viewState === "success" && availability && (
+                <AvailabilityResult data={availability} />
+              )}
             </div>
-          </form>
-        </section>
-
-        <div className="status-region" aria-live="polite" aria-busy={viewState === "loading"}>
-          {viewState === "initial" && (
-            <p className="notice">Enter a facility ID to view its current availability.</p>
-          )}
-          {viewState === "loading" && <p className="notice">Loading facility availability...</p>}
-          {viewState === "error" && (
-            <p className="notice error" role="alert">
-              {error}
-            </p>
-          )}
-          {viewState === "success" && availability && <AvailabilityResult data={availability} />}
-        </div>
+          </>
+        )}
 
         <p className="meta">
           {APP_NAME} · v{APP_VERSION}
         </p>
       </div>
     </main>
+  );
+}
+
+function ReservationsView({
+  data,
+  error,
+  state,
+}: {
+  data: BookingListResponse;
+  error: string;
+  state: ReservationsState;
+}) {
+  return (
+    <section className="reservations-view" aria-labelledby="reservations-title">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Account</p>
+          <h2 id="reservations-title">My Reservations</h2>
+        </div>
+        <span className="reservation-count">
+          {state === "success" ? `${data.reservations.length} total` : "Private history"}
+        </span>
+      </div>
+      <div className="status-region" aria-live="polite" aria-busy={state === "loading"}>
+        {state === "loading" && <p className="notice">Loading your reservations...</p>}
+        {state === "error" && (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        )}
+        {state === "success" && data.reservations.length === 0 && (
+          <p className="notice">You have no reservations yet.</p>
+        )}
+        {state === "success" && data.reservations.length > 0 && (
+          <ul className="reservation-list">
+            {data.reservations.map((reservation) => (
+              <ReservationCard key={reservation.id} reservation={reservation} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ReservationCard({ reservation }: { reservation: Reservation }) {
+  return (
+    <li className="reservation-card">
+      <div className="reservation-card-heading">
+        <div>
+          <p className="section-kicker">Reservation</p>
+          <h3>{reservation.reservationCode}</h3>
+        </div>
+        <span className={`reservation-status state-${reservation.state.toLowerCase()}`}>
+          {bookingStatusLabel(reservation.state)}
+        </span>
+      </div>
+      <dl className="reservation-details">
+        <div>
+          <dt>Facility ID</dt>
+          <dd>{reservation.facilityId}</dd>
+        </div>
+        {reservation.slotId !== null && (
+          <div>
+            <dt>Slot ID</dt>
+            <dd>{reservation.slotId}</dd>
+          </div>
+        )}
+        <div>
+          <dt>Start time</dt>
+          <dd>
+            <time dateTime={reservation.startsAt}>{formatTimestamp(reservation.startsAt)}</time>
+          </dd>
+        </div>
+        <div>
+          <dt>End time</dt>
+          <dd>
+            <time dateTime={reservation.endsAt}>{formatTimestamp(reservation.endsAt)}</time>
+          </dd>
+        </div>
+        <div>
+          <dt>Created</dt>
+          <dd>
+            <time dateTime={reservation.createdAt}>{formatTimestamp(reservation.createdAt)}</time>
+          </dd>
+        </div>
+      </dl>
+    </li>
   );
 }
 
