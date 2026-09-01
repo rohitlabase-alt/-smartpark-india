@@ -16,7 +16,7 @@
     "dev:web": "npm run dev -w @smartpark/web",
     "build": "npm run build -w @smartpark/shared && npm run build -w @smartpark/api && npm run build -w @smartpark/web && npm run build -w @smartpark/iot",
     "test": "npm run test -w @smartpark/shared && npm run test -w @smartpark/api && npm run test -w @smartpark/iot",
-    "typecheck": "npm run typecheck -w @smartpark/shared && npm run typecheck -w @smartpark/api && npm run typecheck -w @smartpark/web && npm run typecheck -w @smartpark/iot",
+    "typecheck": "npm run build -w @smartpark/shared && npm run typecheck -w @smartpark/api && npm run typecheck -w @smartpark/web && npm run typecheck -w @smartpark/iot",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
