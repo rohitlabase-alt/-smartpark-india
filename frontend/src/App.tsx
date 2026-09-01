@@ -7,14 +7,16 @@ import {
   MVP_STATUS,
   type BookingStatus,
   type BookingListResponse,
+  type BookingResponse,
   type FacilityAvailabilityResponse,
   type LoginRequest,
+  type ParkingSlot,
   type Reservation,
   type RegisterRequest,
 } from "@smartpark/shared";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import { fetchFacilityAvailability } from "./api/availability";
-import { fetchReservations } from "./api/reservations";
+import { createReservation, fetchReservations } from "./api/reservations";
 import {
   AuthApiError,
   clearMemorySession,
@@ -46,6 +48,33 @@ function bookingStatusLabel(status: BookingStatus): string {
   return statusLabel(status);
 }
 
+function bookableSlots(availability: FacilityAvailabilityResponse): ParkingSlot[] {
+  return availability.slots.filter(
+    (slot) =>
+      slot.reservationsEnabled && (slot.status === "AVAILABLE" || slot.status === "RESERVED"),
+  );
+}
+
+function reservationCreationError(cause: unknown): string {
+  if (cause instanceof AuthApiError) {
+    switch (cause.code) {
+      case "VALIDATION_ERROR":
+        return "Check the slot and date/time values, then try again.";
+      case "FACILITY_NOT_FOUND":
+        return "This facility is no longer available.";
+      case "SLOT_NOT_FOUND":
+        return "This parking slot is no longer available.";
+      case "SLOT_UNAVAILABLE":
+        return "This slot cannot be reserved right now.";
+      case "RESERVATION_CONFLICT":
+        return "This slot is no longer available for that time. Choose another time or slot.";
+      case "UNAUTHORIZED":
+        return "You are not authorized to create reservations.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Unable to create your reservation.";
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("availability");
   const [session, setSession] = useState<AuthSession>();
@@ -58,6 +87,8 @@ export default function App() {
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [reservationsState, setReservationsState] = useState<ReservationsState>("initial");
   const [reservationsError, setReservationsError] = useState("");
+  const [createdReservation, setCreatedReservation] = useState<BookingResponse>();
+  const [creationError, setCreationError] = useState("");
 
   useEffect(() => {
     const existing = getMemorySession();
@@ -166,6 +197,8 @@ export default function App() {
 
     setViewState("loading");
     setError("");
+    setCreatedReservation(undefined);
+    setCreationError("");
     try {
       setAvailability(await fetchFacilityAvailability(trimmedId));
       setViewState("success");
@@ -306,7 +339,23 @@ export default function App() {
                 </p>
               )}
               {viewState === "success" && availability && (
-                <AvailabilityResult data={availability} />
+                <>
+                  <AvailabilityResult data={availability} />
+                  {sessionState === "authenticated" &&
+                    session &&
+                    bookableSlots(availability).length > 0 && (
+                      <ReservationCreation
+                        accessToken={session.accessToken}
+                        createdReservation={createdReservation}
+                        error={creationError}
+                        facilityId={Number(facilityId.trim())}
+                        slots={bookableSlots(availability)}
+                        onError={setCreationError}
+                        onSuccess={setCreatedReservation}
+                        onViewReservations={() => void handleOpenReservations()}
+                      />
+                    )}
+                </>
               )}
             </div>
           </>
@@ -405,6 +454,144 @@ function ReservationCard({ reservation }: { reservation: Reservation }) {
         </div>
       </dl>
     </li>
+  );
+}
+
+function ReservationCreation({
+  accessToken,
+  createdReservation,
+  error,
+  facilityId,
+  slots,
+  onError,
+  onSuccess,
+  onViewReservations,
+}: {
+  accessToken: string;
+  createdReservation: BookingResponse | undefined;
+  error: string;
+  facilityId: number;
+  slots: ParkingSlot[];
+  onError: (message: string) => void;
+  onSuccess: (response: BookingResponse) => void;
+  onViewReservations: () => void;
+}) {
+  const [slotId, setSlotId] = useState("");
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (submitting) return;
+    if (!slotId) {
+      onError("Choose an available slot.");
+      return;
+    }
+    if (!startsAt || !endsAt) {
+      onError("Enter both a start and end date/time.");
+      return;
+    }
+
+    const startDate = new Date(startsAt);
+    const endDate = new Date(endsAt);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      onError("Enter valid start and end date/time values.");
+      return;
+    }
+    if (endDate.getTime() <= startDate.getTime()) {
+      onError("End time must be after start time.");
+      return;
+    }
+
+    setSubmitting(true);
+    onError("");
+    try {
+      const response = await createReservation(accessToken, {
+        facilityId,
+        slotId: Number(slotId),
+        startsAt: startDate.toISOString(),
+        endsAt: endDate.toISOString(),
+      });
+      onSuccess(response);
+    } catch (cause) {
+      onError(reservationCreationError(cause));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="reservation-creation" aria-labelledby="reservation-creation-title">
+      <div className="reservation-creation-heading">
+        <div>
+          <p className="section-kicker">Reserve a slot</p>
+          <h3 id="reservation-creation-title">Create a reservation</h3>
+        </div>
+        <span className="reservation-facility">Facility {facilityId}</span>
+      </div>
+      <form className="reservation-form" onSubmit={handleSubmit} aria-busy={submitting}>
+        <label htmlFor="reservation-slot">Slot</label>
+        <select
+          id="reservation-slot"
+          required
+          value={slotId}
+          onChange={(event) => setSlotId(event.target.value)}
+        >
+          <option value="">Choose a slot</option>
+          {slots.map((slot) => (
+            <option key={slot.id} value={slot.id}>
+              {slot.slotCode} · {statusLabel(slot.status)}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="reservation-start">Start date and time</label>
+        <input
+          id="reservation-start"
+          required
+          type="datetime-local"
+          value={startsAt}
+          onChange={(event) => setStartsAt(event.target.value)}
+        />
+        <label htmlFor="reservation-end">End date and time</label>
+        <input
+          id="reservation-end"
+          required
+          type="datetime-local"
+          value={endsAt}
+          onChange={(event) => setEndsAt(event.target.value)}
+        />
+        <button type="submit" disabled={submitting}>
+          {submitting ? "Creating reservation..." : "Create reservation"}
+        </button>
+      </form>
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
+      {createdReservation && (
+        <div className="reservation-confirmation" role="status" aria-live="polite">
+          <p className="section-kicker">Reservation confirmed</p>
+          <h4>{createdReservation.reservation.reservationCode}</h4>
+          <p>
+            <strong>{statusLabel(createdReservation.reservation.state)}</strong> for slot{" "}
+            {createdReservation.reservation.slotId} from{" "}
+            <time dateTime={createdReservation.reservation.startsAt}>
+              {formatTimestamp(createdReservation.reservation.startsAt)}
+            </time>{" "}
+            to{" "}
+            <time dateTime={createdReservation.reservation.endsAt}>
+              {formatTimestamp(createdReservation.reservation.endsAt)}
+            </time>
+            .
+          </p>
+          <button type="button" onClick={onViewReservations}>
+            View My Reservations
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

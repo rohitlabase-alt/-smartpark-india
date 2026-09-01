@@ -1,4 +1,10 @@
-import { RESERVATION_STATES, type BookingListResponse, type Reservation } from "@smartpark/shared";
+import {
+  RESERVATION_STATES,
+  type BookingListResponse,
+  type BookingResponse,
+  type CreateBookingRequest,
+  type Reservation,
+} from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 
 function isReservation(value: unknown): value is Reservation {
@@ -36,17 +42,32 @@ function isBookingListResponse(value: unknown): value is BookingListResponse {
   );
 }
 
-export async function fetchReservations(accessToken: string): Promise<BookingListResponse> {
+function isBookingResponse(value: unknown): value is BookingResponse {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    isReservation((value as { reservation?: unknown }).reservation)
+  );
+}
+
+async function requestJson(
+  path: string,
+  options: RequestInit,
+  networkErrorMessage: string,
+  apiErrorMessage: string,
+): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/reservations`, {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
       headers: {
         Accept: "application/json",
-        Authorization: `Bearer ${accessToken}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
       },
     });
   } catch {
-    throw new AuthApiError("Unable to reach the reservations service.");
+    throw new AuthApiError(networkErrorMessage);
   }
 
   let body: unknown;
@@ -61,7 +82,7 @@ export async function fetchReservations(accessToken: string): Promise<BookingLis
     const message =
       error && typeof error === "object" && "message" in error && typeof error.message === "string"
         ? error.message
-        : "Unable to load your reservations.";
+        : apiErrorMessage;
     const code =
       error && typeof error === "object" && "code" in error && typeof error.code === "string"
         ? error.code
@@ -69,11 +90,41 @@ export async function fetchReservations(accessToken: string): Promise<BookingLis
     throw new AuthApiError(message, response.status, code);
   }
 
+  return body;
+}
+
+export async function fetchReservations(accessToken: string): Promise<BookingListResponse> {
+  const body = await requestJson(
+    "/reservations",
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+    "Unable to reach the reservations service.",
+    "Unable to load your reservations.",
+  );
+
   if (!isBookingListResponse(body)) {
-    throw new AuthApiError(
-      "The reservations response was incomplete or malformed.",
-      response.status,
-    );
+    throw new AuthApiError("The reservations response was incomplete or malformed.");
+  }
+
+  return body;
+}
+
+export async function createReservation(
+  accessToken: string,
+  input: CreateBookingRequest,
+): Promise<BookingResponse> {
+  const body = await requestJson(
+    "/reservations",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(input),
+    },
+    "Unable to reach the reservations service.",
+    "Unable to create your reservation.",
+  );
+
+  if (!isBookingResponse(body)) {
+    throw new AuthApiError("The reservation response was incomplete or malformed.");
   }
 
   return body;
