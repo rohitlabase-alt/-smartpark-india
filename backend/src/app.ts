@@ -7,6 +7,7 @@ import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
 import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
 import { errorHandler, notFoundHandler } from "./http/error-handler.js";
+import { config } from "./config.js";
 
 export interface CreateAppOptions {
   /**
@@ -14,6 +15,39 @@ export interface CreateAppOptions {
    * without a live postgres. Defaults to the real connection check.
    */
   checkDatabaseReady?: () => Promise<boolean>;
+  /** CORS allowlist override for deterministic tests. */
+  corsOrigins?: string[];
+}
+
+function corsMiddleware(allowedOrigins: string[]) {
+  return (req: Request, res: Response, next: () => void): void => {
+    const origin = req.header("Origin");
+    if (!origin) {
+      next();
+      return;
+    }
+
+    res.vary("Origin");
+    if (!allowedOrigins.includes(origin)) {
+      if (req.method === "OPTIONS") {
+        res
+          .status(403)
+          .json({ error: { code: "CORS_ORIGIN_DENIED", message: "Origin is not allowed" } });
+        return;
+      }
+      next();
+      return;
+    }
+
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization");
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  };
 }
 
 /**
@@ -26,6 +60,7 @@ export function createApp(options: CreateAppOptions = {}): Express {
   const app = express();
   const checkDatabaseReady = options.checkDatabaseReady ?? checkDatabaseConnection;
 
+  app.use(corsMiddleware(options.corsOrigins ?? config.corsOrigins));
   app.use(express.json());
 
   // Health —— liveness contract (docs/API_SPEC.md). Deliberately independent

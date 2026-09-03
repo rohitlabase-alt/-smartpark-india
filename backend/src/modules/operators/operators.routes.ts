@@ -41,6 +41,7 @@ const createFacilitySchema = z
 const updateFacilitySchema = z
   .object({
     name: z.string().trim().min(1).max(160).optional(),
+    description: z.string().trim().min(1).max(2000).optional(),
     type: z.enum(FACILITY_TYPES).optional(),
     city: z.string().trim().min(1).max(64).optional(),
     state: z.string().trim().min(1).max(64).nullable().optional(),

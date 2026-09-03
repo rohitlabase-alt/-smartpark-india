@@ -513,13 +513,19 @@ describe("Parking facility CRUD (owned by the operator)", () => {
 
     const patch = await jsonPatch(
       `/api/v1/operators/me/facilities/${facility.id}`,
-      { isActive: false, name: "Renamed Lot", capacity: 60 },
+      {
+        isActive: false,
+        name: "Renamed Lot",
+        description: "Updated facility description",
+        capacity: 60,
+      },
       session.accessToken,
     );
     expect(patch.status).toBe(200);
     const updated = patch.body as ParkingFacility;
     expect(updated.isActive).toBe(false);
     expect(updated.name).toBe("Renamed Lot");
+    expect(updated.description).toBe("Updated facility description");
     expect(updated.capacity).toBe(60);
   });
 

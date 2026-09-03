@@ -52,6 +52,7 @@ export interface AppConfig {
   nodeEnv: string;
   port: number;
   apiBaseUrl: string;
+  corsOrigins: string[];
   database: DatabaseConfig;
   storage: StorageConfig;
   blockchain: BlockchainConfig;
@@ -78,6 +79,16 @@ export const config: AppConfig = {
   // Backward-compatible with the Phase 1A PORT variable.
   port: Number(process.env.API_PORT ?? process.env.PORT ?? 4000),
   apiBaseUrl: process.env.API_BASE_URL ?? "http://localhost:4000/api/v1",
+  // Local development is intentionally scoped to the Vite origin. Production
+  // must provide an explicit comma-separated allowlist and never falls back to
+  // a wildcard origin.
+  corsOrigins: (
+    process.env.CORS_ORIGINS ??
+    (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173")
+  )
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0 && origin !== "*"),
   database: {
     url: process.env.DATABASE_URL || undefined,
   },
