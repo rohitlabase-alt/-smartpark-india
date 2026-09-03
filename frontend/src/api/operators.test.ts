@@ -9,6 +9,7 @@ import {
   createOperatorSlot,
   registerOperator,
   updateOperatorFacility,
+  updateOperatorSlot,
 } from "./operators";
 
 const operator: Operator = {
@@ -275,6 +276,48 @@ describe("operator facilities API client", () => {
     expect(sentBody).not.toHaveProperty("userId");
     expect(sentBody).not.toHaveProperty("facilityId");
     expect(sentBody).not.toHaveProperty("ownership");
+  });
+
+  it("patches a slot with the exact supported fields", async () => {
+    const input = {
+      vehicleType: "motorcycle",
+      status: "OCCUPIED" as const,
+      reservationsEnabled: false,
+    };
+    const updatedSlot = { ...slot, ...input };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(updatedSlot), { status: 200 }));
+    await expect(updateOperatorSlot("access-token", 42, slot.id, input)).resolves.toEqual(
+      updatedSlot,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE_URL}/operators/me/facilities/42/slots/${slot.id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: "Bearer access-token",
+        },
+      },
+    );
+  });
+
+  it("rejects malformed slot update responses and surfaces API errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ id: slot.id }), { status: 200 }),
+    );
+    await expect(
+      updateOperatorSlot("access-token", 42, slot.id, { status: "AVAILABLE" }),
+    ).rejects.toThrow("incomplete or malformed");
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(403, "FORBIDDEN"));
+    await expect(
+      updateOperatorSlot("access-token", 42, slot.id, { reservationsEnabled: false }),
+    ).rejects.toMatchObject({ status: 403, code: "FORBIDDEN" });
   });
 
   it.each([

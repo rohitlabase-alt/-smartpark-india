@@ -290,6 +290,64 @@ describe("operator dashboard", () => {
     );
   });
 
+  it("edits a slot using read-only identity fields and the authoritative response", async () => {
+    const updatedSlot = {
+      ...slot,
+      vehicleType: "motorcycle",
+      status: "OCCUPIED" as const,
+      reservationsEnabled: false,
+      updatedAt: "2026-09-01T11:00:00.000Z",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(updatedSlot), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit slot").click());
+    expect(container.querySelector<HTMLInputElement>("#edit-slot-code-9")?.readOnly).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("#edit-slot-code-9")?.value).toBe("A01");
+    setField("edit-slot-vehicle-type-9", " motorcycle ");
+    setField("edit-slot-status-9", "OCCUPIED", "change");
+    await act(async () =>
+      container.querySelector<HTMLInputElement>("#edit-slot-reservations-9")!.click(),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-edit-form")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock.mock.calls[3]![0]).toContain("/facilities/4/slots/9");
+    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({
+        vehicleType: "motorcycle",
+        status: "OCCUPIED",
+        reservationsEnabled: false,
+      }),
+    });
+    expect(container.querySelector(".slot-edit-form")).toBeNull();
+    expect(container.textContent).toContain("A01 was updated with status OCCUPIED");
+    expect(container.textContent).toContain("motorcycle · OCCUPIED · reservations disabled");
+  });
+
+  it("validates slot edits before making a PATCH request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Edit slot").click());
+    setField("edit-slot-vehicle-type-9", " ");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".slot-edit-form")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Enter a vehicle type");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("shows slot creation loading state and prevents duplicate POST requests", async () => {
     let resolveCreate!: (response: Response) => void;
     const fetchMock = vi
