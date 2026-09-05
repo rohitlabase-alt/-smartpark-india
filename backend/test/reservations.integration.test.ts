@@ -429,6 +429,94 @@ describe("GET /api/v1/reservations — own list + detail (IDOR)", () => {
   });
 });
 
+describe("GET /api/v1/operators/me/reservations — operator scope", () => {
+  let operatorA: AuthResponse;
+  let operatorB: AuthResponse;
+  let regularUser: AuthResponse;
+  let emptyOperator: AuthResponse;
+  let facilityA1: ParkingFacility;
+  let facilityA2: ParkingFacility;
+  let facilityB: ParkingFacility;
+  let deletedCode: string;
+
+  beforeAll(async () => {
+    operatorA = await registerOperatorSession("reservation-list-opA");
+    operatorB = await registerOperatorSession("reservation-list-opB");
+    regularUser = await registerSession("reservation-list-user");
+    emptyOperator = await registerOperatorSession("reservation-list-empty");
+    facilityA1 = await createFacility(operatorA.accessToken);
+    facilityA2 = await createFacility(operatorA.accessToken);
+    facilityB = await createFacility(operatorB.accessToken);
+
+    const old = await createBooking(regularUser.accessToken, WINDOW(facilityA1.id, undefined, 10));
+    const middle = await createBooking(
+      regularUser.accessToken,
+      WINDOW(facilityA2.id, undefined, 11),
+    );
+    const newest = await createBooking(
+      regularUser.accessToken,
+      WINDOW(facilityA1.id, undefined, 12),
+    );
+    const foreign = await createBooking(
+      regularUser.accessToken,
+      WINDOW(facilityB.id, undefined, 13),
+    );
+    expect(old.status).toBe(201);
+    expect(middle.status).toBe(201);
+    expect(newest.status).toBe(201);
+    expect(foreign.status).toBe(201);
+    deletedCode = (middle.body as BookingResponse).reservation.reservationCode;
+  });
+
+  it("rejects unauthenticated and non-operator requests", async () => {
+    expect((await jsonGet("/api/v1/operators/me/reservations")).status).toBe(401);
+    const regular = await jsonGet("/api/v1/operators/me/reservations", regularUser.accessToken);
+    expect(regular.status).toBe(403);
+  });
+
+  it("returns only reservations from all facilities owned by the operator", async () => {
+    const res = await jsonGet("/api/v1/operators/me/reservations", operatorA.accessToken);
+    expect(res.status).toBe(200);
+    const list = res.body as BookingListResponse;
+    expect(list.reservations).toHaveLength(3);
+    expect(
+      list.reservations.every((reservation) =>
+        [facilityA1.id, facilityA2.id].includes(reservation.facilityId),
+      ),
+    ).toBe(true);
+    expect(list.reservations.some((reservation) => reservation.facilityId === facilityB.id)).toBe(
+      false,
+    );
+    expect(list.reservations.map((reservation) => reservation.startsAt)).toEqual(
+      [...list.reservations.map((reservation) => reservation.startsAt)].sort().reverse(),
+    );
+    expect(JSON.stringify(list)).not.toMatch(/name|email/i);
+  });
+
+  it("excludes soft-deleted reservations and returns an empty shape when scoped data is absent", async () => {
+    await getPool().query(
+      "UPDATE reservations SET deleted_at = now() WHERE reservation_code = $1",
+      [deletedCode],
+    );
+    const scoped = await jsonGet("/api/v1/operators/me/reservations", operatorA.accessToken);
+    expect((scoped.body as BookingListResponse).reservations).toHaveLength(2);
+    expect(JSON.stringify(scoped.body)).not.toContain(deletedCode);
+
+    const empty = await jsonGet("/api/v1/operators/me/reservations", emptyOperator.accessToken);
+    expect(empty.status).toBe(200);
+    expect(empty.body).toEqual({ reservations: [] });
+  });
+
+  it("cannot use the operator endpoint to retrieve another operator's reservations", async () => {
+    const res = await jsonGet("/api/v1/operators/me/reservations", operatorB.accessToken);
+    expect(res.status).toBe(200);
+    const list = res.body as BookingListResponse;
+    expect(list.reservations).toHaveLength(1);
+    expect(list.reservations[0]!.facilityId).toBe(facilityB.id);
+    expect(list.reservations[0]!.facilityId).not.toBe(facilityA1.id);
+  });
+});
+
 describe("POST /api/v1/reservations/:code/cancel", () => {
   let userA: AuthResponse;
   let userB: AuthResponse;

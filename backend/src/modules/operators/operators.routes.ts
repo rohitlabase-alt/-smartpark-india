@@ -76,6 +76,15 @@ operatorsRouter.get(
   }),
 );
 
+operatorsRouter.get(
+  "/me/reservations",
+  requireAuth(),
+  OPERATOR_ROUTES,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(await operatorsService.listOperatorReservations(req.auth.userId));
+  }),
+);
+
 operatorsRouter.post(
   "/me/facilities",
   requireAuth(),

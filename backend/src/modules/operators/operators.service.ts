@@ -4,11 +4,12 @@
  * owner of a PENDING operator org and gains the PARKING_OPERATOR role.
  * Admin verification/approval lands in a later phase.
  */
-import type { Operator, OperatorRegisterRequest } from "@smartpark/shared";
+import type { BookingListResponse, Operator, OperatorRegisterRequest } from "@smartpark/shared";
 import { notFound } from "../../http/errors.js";
 import { assignRole } from "../auth/auth.repository.js";
 import { withTransaction } from "../../db.js";
 import { operatorsRepository, toOperatorDto } from "./operators.repository.js";
+import { reservationsRepository, toReservationDto } from "../bookings/reservations.repository.js";
 
 export const operatorsService = {
   async registerOperator(userId: number, input: OperatorRegisterRequest): Promise<Operator> {
@@ -31,5 +32,14 @@ export const operatorsService = {
       throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
     }
     return toOperatorDto(operator);
+  },
+
+  async listOperatorReservations(userId: number): Promise<BookingListResponse> {
+    const operator = await operatorsRepository.findByOwnerUser(userId);
+    if (!operator) {
+      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
+    }
+    const rows = await reservationsRepository.listByOperator(operator.id);
+    return { reservations: rows.map(toReservationDto) };
   },
 };

@@ -40,6 +40,7 @@ function corsMiddleware(allowedOrigins: string[]) {
     }
 
     res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization");
     if (req.method === "OPTIONS") {

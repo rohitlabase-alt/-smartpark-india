@@ -84,6 +84,11 @@ const SELECT_COLUMNS = `
   starts_at, ends_at, state, cancel_reason, cancelled_at, confirmed_at,
   created_at, updated_at`;
 
+const OPERATOR_SELECT_COLUMNS = `
+  r.id, r.reservation_code, r.user_id, r.facility_id, r.zone_id, r.slot_id,
+  r.starts_at, r.ends_at, r.state, r.cancel_reason, r.cancelled_at, r.confirmed_at,
+  r.created_at, r.updated_at`;
+
 /**
  * Maps the btree_gist exclusion-constraint violation (23P01 on
  * reservations_no_overlap) to the documented 409 RESERVATION_CONFLICT; any
@@ -165,6 +170,19 @@ export const reservationsRepository = {
        WHERE user_id = $1 AND deleted_at IS NULL
        ORDER BY starts_at DESC`,
       [userId],
+    );
+    return rows.map(mapReservation);
+  },
+
+  /** Operator-scoped reservation history; facility ownership is enforced in SQL. */
+  async listByOperator(operatorId: number): Promise<ReservationRow[]> {
+    const { rows } = await getPool().query<ReservationResult>(
+      `SELECT ${OPERATOR_SELECT_COLUMNS}
+       FROM reservations r
+       JOIN parking_facilities f ON f.id = r.facility_id
+       WHERE f.operator_id = $1 AND f.deleted_at IS NULL AND r.deleted_at IS NULL
+       ORDER BY r.starts_at DESC`,
+      [operatorId],
     );
     return rows.map(mapReservation);
   },

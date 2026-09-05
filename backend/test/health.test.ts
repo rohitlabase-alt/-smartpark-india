@@ -52,6 +52,7 @@ describe("GET /health", () => {
     });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
+    expect(preflight.headers.get("access-control-allow-credentials")).toBe("true");
     expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
   });
 
