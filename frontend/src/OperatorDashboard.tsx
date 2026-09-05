@@ -9,6 +9,7 @@ import {
   type ParkingFacility,
   type ParkingSlot,
   type ParkingSlotStatus,
+  type Reservation,
   type UpdateFacilityRequest,
   type UpdateSlotRequest,
 } from "@smartpark/shared";
@@ -18,6 +19,7 @@ import {
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorMe,
+  getOperatorReservations,
   updateOperatorFacility,
   updateOperatorSlot,
 } from "./api/operators";
@@ -41,6 +43,11 @@ function label(value: string): string {
   return value.replace(/[-_]/g, " ");
 }
 
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
 export default function OperatorDashboard({ accessToken }: { accessToken: string }) {
   const [operator, setOperator] = useState<Operator>();
   const [operatorState, setOperatorState] = useState<LoadState>("loading");
@@ -52,6 +59,9 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [slotsState, setSlotsState] = useState<LoadState>("success");
   const [slotsError, setSlotsError] = useState("");
+  const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [reservationsState, setReservationsState] = useState<LoadState>("loading");
+  const [reservationsError, setReservationsError] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -111,6 +121,9 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlots([]);
     setSlotsState("success");
     setSlotsError("");
+    setReservations([]);
+    setReservationsState("loading");
+    setReservationsError("");
     setEditFacilityId(undefined);
     setEditSubmitting(false);
     facilityEditRequestId.current += 1;
@@ -152,6 +165,19 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       },
     );
 
+    void getOperatorReservations(accessToken).then(
+      (result) => {
+        if (!active) return;
+        setReservations(result.reservations);
+        setReservationsState("success");
+      },
+      (cause: unknown) => {
+        if (!active) return;
+        setReservationsState("error");
+        setReservationsError(operatorError(cause));
+      },
+    );
+
     return () => {
       active = false;
     };
@@ -187,6 +213,22 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   }, [accessToken, selectedFacilityId]);
 
   const selectedFacility = facilities.find((facility) => facility.id === selectedFacilityId);
+
+  function reservationFacilityName(reservation: Reservation): string {
+    return (
+      facilities.find((facility) => facility.id === reservation.facilityId)?.name ??
+      `Facility #${reservation.facilityId}`
+    );
+  }
+
+  function reservationSlotLabel(reservation: Reservation): string {
+    if (reservation.slotId === null) return "Not assigned";
+    if (reservation.facilityId !== selectedFacilityId) return `Slot #${reservation.slotId}`;
+    return (
+      slots.find((slot) => slot.id === reservation.slotId)?.slotCode ??
+      `Slot #${reservation.slotId}`
+    );
+  }
 
   function handleSelectFacility(facilityId: number): void {
     facilityEditRequestId.current += 1;
@@ -689,6 +731,99 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
           )}
         </section>
       </div>
+
+      <section className="operator-panel slots-panel" aria-labelledby="operator-reservations-title">
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="section-kicker">Bookings</p>
+            <h3 id="operator-reservations-title">Reservations</h3>
+          </div>
+          {reservationsState === "success" && (
+            <span className="reservation-count">{reservations.length} total</span>
+          )}
+        </div>
+        {reservationsState === "loading" && <p className="notice">Loading reservations...</p>}
+        {reservationsState === "error" && (
+          <p className="notice error" role="alert">
+            {reservationsError}
+          </p>
+        )}
+        {reservationsState === "success" && reservations.length === 0 && (
+          <p className="empty-state">No reservations have been made for your facilities.</p>
+        )}
+        {reservationsState === "success" && reservations.length > 0 && (
+          <ul className="reservation-list">
+            {reservations.map((reservation) => (
+              <li className="reservation-card" key={reservation.id}>
+                <div className="reservation-card-heading">
+                  <strong>{reservation.reservationCode}</strong>
+                  <span className={`reservation-status state-${reservation.state.toLowerCase()}`}>
+                    {label(reservation.state)}
+                  </span>
+                </div>
+                <dl className="reservation-details">
+                  <div>
+                    <dt>Facility</dt>
+                    <dd>{reservationFacilityName(reservation)}</dd>
+                  </div>
+                  <div>
+                    <dt>Slot</dt>
+                    <dd>{reservationSlotLabel(reservation)}</dd>
+                  </div>
+                  {reservation.zoneId !== null && (
+                    <div>
+                      <dt>Zone</dt>
+                      <dd>Zone #{reservation.zoneId}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt>Start time</dt>
+                    <dd>
+                      <time dateTime={reservation.startsAt}>
+                        {formatTimestamp(reservation.startsAt)}
+                      </time>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>End time</dt>
+                    <dd>
+                      <time dateTime={reservation.endsAt}>
+                        {formatTimestamp(reservation.endsAt)}
+                      </time>
+                    </dd>
+                  </div>
+                  {reservation.confirmedAt !== null && (
+                    <div>
+                      <dt>Confirmed</dt>
+                      <dd>
+                        <time dateTime={reservation.confirmedAt}>
+                          {formatTimestamp(reservation.confirmedAt)}
+                        </time>
+                      </dd>
+                    </div>
+                  )}
+                  {reservation.cancelledAt !== null && (
+                    <div>
+                      <dt>Cancelled</dt>
+                      <dd>
+                        <time dateTime={reservation.cancelledAt}>
+                          {formatTimestamp(reservation.cancelledAt)}
+                        </time>
+                      </dd>
+                    </div>
+                  )}
+                  {reservation.cancelReason !== null && (
+                    <div>
+                      <dt>Cancellation reason</dt>
+                      <dd>{reservation.cancelReason}</dd>
+                    </div>
+                  )}
+                </dl>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {selectedFacility && (
         <section className="operator-panel slots-panel" aria-labelledby="operator-slots-title">

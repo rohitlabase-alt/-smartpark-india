@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Operator, ParkingFacility, ParkingSlot } from "@smartpark/shared";
+import type {
+  BookingListResponse,
+  Operator,
+  ParkingFacility,
+  ParkingSlot,
+} from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 import {
   getOperatorFacilities,
   getOperatorFacilitySlots,
+  getOperatorReservations,
   getOperatorMe,
   createOperatorFacility,
   createOperatorSlot,
@@ -54,6 +60,27 @@ const slot: ParkingSlot = {
   reservationsEnabled: true,
   createdAt: "2026-09-01T10:00:00.000Z",
   updatedAt: "2026-09-01T10:00:00.000Z",
+};
+
+const bookingList: BookingListResponse = {
+  reservations: [
+    {
+      id: 12,
+      reservationCode: "BKG-ABC123",
+      userId: 7,
+      facilityId: 4,
+      zoneId: null,
+      slotId: 9,
+      startsAt: "2026-09-10T08:00:00.000Z",
+      endsAt: "2026-09-10T10:00:00.000Z",
+      state: "CONFIRMED",
+      cancelReason: null,
+      cancelledAt: null,
+      confirmedAt: "2026-09-01T10:05:00.000Z",
+      createdAt: "2026-09-01T10:05:00.000Z",
+      updatedAt: "2026-09-01T10:05:00.000Z",
+    },
+  ],
 };
 
 const registrationInput = {
@@ -470,5 +497,49 @@ describe("operator facility slots API client", () => {
     await expect(getOperatorFacilitySlots("access-token", facility.id)).rejects.toThrow(
       "Unable to reach",
     );
+  });
+});
+
+describe("operator reservations API client", () => {
+  it("gets reservations with the exact endpoint and bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(bookingList), { status: 200 }));
+    await expect(getOperatorReservations("access-token")).resolves.toEqual(bookingList);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/reservations`, {
+      headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+    });
+  });
+
+  it("accepts an empty reservation list", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservations: [] }), { status: 200 }),
+    );
+    await expect(getOperatorReservations("access-token")).resolves.toEqual({ reservations: [] });
+  });
+
+  it("rejects malformed reservation list responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservations: [{ id: 12 }] }), { status: 200 }),
+    );
+    await expect(getOperatorReservations("access-token")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+  ])("surfaces %i reservation responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(getOperatorReservations("access-token")).rejects.toMatchObject({ status, code });
+  });
+
+  it("maps network failures to the operator service error", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getOperatorReservations("access-token")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
   });
 });

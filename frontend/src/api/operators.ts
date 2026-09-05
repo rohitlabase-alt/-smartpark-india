@@ -1,12 +1,15 @@
 import {
   OPERATOR_STATUSES,
   PARKING_SLOT_STATUSES,
+  RESERVATION_STATES,
+  type BookingListResponse,
   type CreateFacilityRequest,
   type CreateSlotRequest,
   type Operator,
   type OperatorRegisterRequest,
   type ParkingFacility,
   type ParkingSlot,
+  type Reservation,
   type UpdateFacilityRequest,
   type UpdateSlotRequest,
 } from "@smartpark/shared";
@@ -76,6 +79,41 @@ function isSlot(value: unknown): value is ParkingSlot {
     typeof slot.reservationsEnabled === "boolean" &&
     typeof slot.createdAt === "string" &&
     typeof slot.updatedAt === "string"
+  );
+}
+
+function isReservation(value: unknown): value is Reservation {
+  if (!value || typeof value !== "object") return false;
+  const reservation = value as Partial<Reservation>;
+  return (
+    typeof reservation.id === "number" &&
+    Number.isFinite(reservation.id) &&
+    typeof reservation.reservationCode === "string" &&
+    reservation.reservationCode.length > 0 &&
+    typeof reservation.userId === "number" &&
+    Number.isFinite(reservation.userId) &&
+    typeof reservation.facilityId === "number" &&
+    Number.isFinite(reservation.facilityId) &&
+    (reservation.zoneId === null || typeof reservation.zoneId === "number") &&
+    (reservation.slotId === null || typeof reservation.slotId === "number") &&
+    typeof reservation.startsAt === "string" &&
+    typeof reservation.endsAt === "string" &&
+    typeof reservation.state === "string" &&
+    RESERVATION_STATES.includes(reservation.state as Reservation["state"]) &&
+    (reservation.cancelReason === null || typeof reservation.cancelReason === "string") &&
+    (reservation.cancelledAt === null || typeof reservation.cancelledAt === "string") &&
+    (reservation.confirmedAt === null || typeof reservation.confirmedAt === "string") &&
+    typeof reservation.createdAt === "string" &&
+    typeof reservation.updatedAt === "string"
+  );
+}
+
+function isBookingListResponse(value: unknown): value is BookingListResponse {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as { reservations?: unknown }).reservations) &&
+    (value as { reservations: unknown[] }).reservations.every(isReservation)
   );
 }
 
@@ -230,6 +268,14 @@ export async function getOperatorFacilitySlots(
   );
   if (!Array.isArray(body) || !body.every(isSlot)) {
     throw new AuthApiError("The facility slots response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function getOperatorReservations(accessToken: string): Promise<BookingListResponse> {
+  const body = await request("/operators/me/reservations", accessToken);
+  if (!isBookingListResponse(body)) {
+    throw new AuthApiError("The operator reservations response was incomplete or malformed.");
   }
   return body;
 }
