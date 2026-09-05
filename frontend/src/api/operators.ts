@@ -279,3 +279,31 @@ export async function getOperatorReservations(accessToken: string): Promise<Book
   }
   return body;
 }
+
+export async function cancelOperatorReservation(
+  accessToken: string,
+  reservationCode: string,
+  reason?: string,
+): Promise<Reservation> {
+  const trimmedReason = reason?.trim();
+  const payload: { reason?: string } = {};
+  if (trimmedReason) {
+    payload.reason = trimmedReason;
+  }
+  const body = await request(
+    `/operators/me/reservations/${encodeURIComponent(reservationCode)}/cancel`,
+    accessToken,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+  const reservation =
+    body && typeof body === "object" && "reservation" in body
+      ? (body as { reservation: unknown }).reservation
+      : undefined;
+  if (!isReservation(reservation)) {
+    throw new AuthApiError("The operator cancellation response was incomplete or malformed.");
+  }
+  return reservation;
+}

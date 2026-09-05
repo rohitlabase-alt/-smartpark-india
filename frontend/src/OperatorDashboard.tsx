@@ -14,6 +14,7 @@ import {
   type UpdateSlotRequest,
 } from "@smartpark/shared";
 import {
+  cancelOperatorReservation,
   createOperatorFacility,
   createOperatorSlot,
   getOperatorFacilities,
@@ -39,6 +40,49 @@ function operatorError(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Unable to load operator data.";
 }
 
+function cancellationErrorMessage(cause: unknown): {
+  message: string;
+  refreshReservations: boolean;
+} {
+  if (cause instanceof AuthApiError) {
+    if (cause.status === 401) {
+      return {
+        message: "Your operator session is no longer authorized. Please sign in again.",
+        refreshReservations: false,
+      };
+    }
+    if (cause.code === "ACCOUNT_INACTIVE") {
+      return { message: "Your operator account is inactive.", refreshReservations: false };
+    }
+    if (cause.status === 403) {
+      return {
+        message: "Your account is not authorized to cancel reservations.",
+        refreshReservations: false,
+      };
+    }
+    if (cause.status === 404) {
+      return {
+        message: "This reservation was not found or is no longer in one of your facilities.",
+        refreshReservations: false,
+      };
+    }
+    if (cause.status === 409 && cause.code === "ALREADY_CANCELLED") {
+      return { message: "This reservation is already cancelled.", refreshReservations: true };
+    }
+    if (cause.status === 422 && cause.code === "CANNOT_CANCEL_COMPLETED") {
+      return {
+        message: "Completed reservations cannot be cancelled.",
+        refreshReservations: true,
+      };
+    }
+    return { message: cause.message, refreshReservations: false };
+  }
+  return {
+    message: cause instanceof Error ? cause.message : "Unable to cancel the reservation.",
+    refreshReservations: false,
+  };
+}
+
 function label(value: string): string {
   return value.replace(/[-_]/g, " ");
 }
@@ -62,6 +106,13 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [reservationsState, setReservationsState] = useState<LoadState>("loading");
   const [reservationsError, setReservationsError] = useState("");
+  const [cancellingReservationId, setCancellingReservationId] = useState<number>();
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [cancellationSubmitting, setCancellationSubmitting] = useState(false);
+  const [cancellationError, setCancellationError] = useState("");
+  const [cancellationSuccess, setCancellationSuccess] = useState("");
+  const cancellationRequestId = useRef(0);
+  const reservationsRefreshRequestId = useRef(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -124,6 +175,13 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setReservations([]);
     setReservationsState("loading");
     setReservationsError("");
+    setCancellingReservationId(undefined);
+    setCancellationReason("");
+    setCancellationSubmitting(false);
+    setCancellationError("");
+    setCancellationSuccess("");
+    cancellationRequestId.current += 1;
+    reservationsRefreshRequestId.current += 1;
     setEditFacilityId(undefined);
     setEditSubmitting(false);
     facilityEditRequestId.current += 1;
@@ -308,6 +366,77 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlotEditId(undefined);
     setSlotEditSubmitting(false);
     setSlotEditError("");
+  }
+
+  function handleRequestCancellation(reservation: Reservation): void {
+    cancellationRequestId.current += 1;
+    setCancellingReservationId(reservation.id);
+    setCancellationReason("");
+    setCancellationSubmitting(false);
+    setCancellationError("");
+    setCancellationSuccess("");
+  }
+
+  function handleKeepReservation(): void {
+    cancellationRequestId.current += 1;
+    setCancellingReservationId(undefined);
+    setCancellationSubmitting(false);
+    setCancellationError("");
+    setCancellationSuccess("");
+  }
+
+  function refreshReservations(withinRequestId: number): void {
+    const refreshId = ++reservationsRefreshRequestId.current;
+    void getOperatorReservations(accessToken).then(
+      (result) => {
+        if (refreshId !== reservationsRefreshRequestId.current) return;
+        if (withinRequestId !== cancellationRequestId.current) return;
+        setReservations(result.reservations);
+      },
+      (cause: unknown) => {
+        if (refreshId !== reservationsRefreshRequestId.current) return;
+        if (withinRequestId !== cancellationRequestId.current) return;
+        setCancellationError(
+          cause instanceof Error ? cause.message : "Unable to refresh reservations.",
+        );
+      },
+    );
+  }
+
+  async function handleConfirmCancellation(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (cancellationSubmitting || cancellingReservationId === undefined) return;
+    const reservation = reservations.find((r) => r.id === cancellingReservationId);
+    if (!reservation) {
+      handleKeepReservation();
+      return;
+    }
+    setCancellationError("");
+    setCancellationSuccess("");
+    const reason = cancellationReason.trim() || undefined;
+    const requestId = ++cancellationRequestId.current;
+    setCancellationSubmitting(true);
+    try {
+      const updated = await cancelOperatorReservation(
+        accessToken,
+        reservation.reservationCode,
+        reason,
+      );
+      if (requestId !== cancellationRequestId.current) return;
+      setReservations((current) => current.map((r) => (r.id === updated.id ? updated : r)));
+      setCancellingReservationId(undefined);
+      setCancellationReason("");
+      setCancellationSuccess(`${reservation.reservationCode} was cancelled.`);
+    } catch (cause) {
+      if (requestId !== cancellationRequestId.current) return;
+      const mapped = cancellationErrorMessage(cause);
+      setCancellationError(mapped.message);
+      if (mapped.refreshReservations) {
+        void refreshReservations(requestId);
+      }
+    } finally {
+      if (requestId === cancellationRequestId.current) setCancellationSubmitting(false);
+    }
   }
 
   async function handleCreateSlot(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -751,6 +880,16 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
         {reservationsState === "success" && reservations.length === 0 && (
           <p className="empty-state">No reservations have been made for your facilities.</p>
         )}
+        {cancellationSuccess && (
+          <p className="notice success" role="status">
+            {cancellationSuccess}
+          </p>
+        )}
+        {cancellationError && (
+          <p className="notice error" role="alert">
+            {cancellationError}
+          </p>
+        )}
         {reservationsState === "success" && reservations.length > 0 && (
           <ul className="reservation-list">
             {reservations.map((reservation) => (
@@ -819,6 +958,68 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                     </div>
                   )}
                 </dl>
+                {reservation.state === "CONFIRMED" &&
+                  cancellingReservationId !== reservation.id && (
+                    <button
+                      className="cancel-reservation-button"
+                      type="button"
+                      onClick={() => handleRequestCancellation(reservation)}
+                    >
+                      Cancel Reservation
+                    </button>
+                  )}
+                {reservation.state === "CONFIRMED" &&
+                  cancellingReservationId === reservation.id && (
+                    <form
+                      className="cancellation-confirmation"
+                      role="group"
+                      aria-labelledby={`cancel-title-${reservation.id}`}
+                      aria-busy={cancellationSubmitting}
+                      onSubmit={(event) => void handleConfirmCancellation(event)}
+                    >
+                      <h4 id={`cancel-title-${reservation.id}`}>Cancel reservation?</h4>
+                      <p>
+                        {reservation.reservationCode} · {reservationFacilityName(reservation)} ·{" "}
+                        {reservationSlotLabel(reservation)}
+                      </p>
+                      <p>
+                        <time dateTime={reservation.startsAt}>
+                          {formatTimestamp(reservation.startsAt)}
+                        </time>{" "}
+                        to{" "}
+                        <time dateTime={reservation.endsAt}>
+                          {formatTimestamp(reservation.endsAt)}
+                        </time>
+                      </p>
+                      <label htmlFor={`cancellation-reason-${reservation.id}`}>
+                        Cancellation reason <span className="optional">(optional)</span>
+                      </label>
+                      <textarea
+                        id={`cancellation-reason-${reservation.id}`}
+                        maxLength={500}
+                        value={cancellationReason}
+                        onChange={(event) => setCancellationReason(event.target.value)}
+                      />
+                      {cancellationSubmitting && (
+                        <p className="cancellation-progress" aria-live="polite">
+                          Cancelling reservation...
+                        </p>
+                      )}
+                      <div className="cancellation-actions">
+                        <button type="submit" disabled={cancellationSubmitting}>
+                          {cancellationSubmitting ? "Cancelling..." : "Confirm Cancellation"}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={cancellationSubmitting}
+                          onClick={handleKeepReservation}
+                        >
+                          Keep Reservation
+                        </button>
+                      </div>
+                    </form>
+                  )}
               </li>
             ))}
           </ul>

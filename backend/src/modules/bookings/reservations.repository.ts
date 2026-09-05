@@ -188,6 +188,33 @@ export const reservationsRepository = {
   },
 
   /**
+   * Operator-scoped reservation lookup by its (non-user-controlled) code for a
+   * cancellation transaction. Ownership is enforced in SQL (reservation →
+   * facility → operator, docs/SECURITY.md §5 IDOR): an operator can only ever
+   * resolve reservations in facilities they own, and a miss surfaces as 404.
+   * The row is locked (FOR UPDATE OF r) so concurrent cancellation requests
+   * serialize and cannot both observe the pre-cancellation state.
+   */
+  async findByCodeForOperator(
+    code: string,
+    operatorId: number,
+    client: PoolClient,
+  ): Promise<ReservationRow | undefined> {
+    const { rows } = await client.query<ReservationResult>(
+      `SELECT ${OPERATOR_SELECT_COLUMNS}
+       FROM reservations r
+       JOIN parking_facilities f ON f.id = r.facility_id
+       WHERE r.reservation_code = $1
+         AND f.operator_id = $2
+         AND f.deleted_at IS NULL
+         AND r.deleted_at IS NULL
+       FOR UPDATE OF r`,
+      [code, operatorId],
+    );
+    return rows[0] ? mapReservation(rows[0]) : undefined;
+  },
+
+  /**
    * Updates a reservation's lifecycle fields on the given transaction.
    * Returns the updated row, or undefined if the id no longer exists.
    */

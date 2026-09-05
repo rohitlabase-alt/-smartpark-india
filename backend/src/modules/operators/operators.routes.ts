@@ -8,7 +8,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { FACILITY_TYPES } from "@smartpark/shared";
 import { asyncHandler } from "../../http/async-handler.js";
-import { notFound } from "../../http/errors.js";
+import { badRequest, notFound } from "../../http/errors.js";
 import type { AuthenticatedRequest } from "../../http/context.js";
 import { requireAuth, requireRole } from "../../middleware/auth.js";
 import { validateBody } from "../../middleware/validate.js";
@@ -56,6 +56,12 @@ const updateFacilitySchema = z
 
 const OPERATOR_ROUTES = requireRole("PARKING_OPERATOR");
 
+const cancelReservationSchema = z
+  .object({
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
 export const operatorsRouter = Router();
 
 operatorsRouter.post(
@@ -82,6 +88,25 @@ operatorsRouter.get(
   OPERATOR_ROUTES,
   asyncHandler(async (req: AuthenticatedRequest, res) => {
     res.json(await operatorsService.listOperatorReservations(req.auth.userId));
+  }),
+);
+
+operatorsRouter.post(
+  "/me/reservations/:reservationCode/cancel",
+  requireAuth(),
+  OPERATOR_ROUTES,
+  validateBody(cancelReservationSchema),
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    if (!req.params.reservationCode) {
+      throw badRequest("VALIDATION_ERROR", "Missing booking code");
+    }
+    res.json(
+      await operatorsService.cancelOperatorReservation(
+        req.auth.userId,
+        req.params.reservationCode,
+        req.body?.reason,
+      ),
+    );
   }),
 );
 

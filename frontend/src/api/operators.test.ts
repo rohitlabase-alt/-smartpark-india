@@ -7,6 +7,7 @@ import type {
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 import {
+  cancelOperatorReservation,
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorReservations,
@@ -538,6 +539,127 @@ describe("operator reservations API client", () => {
   it("maps network failures to the operator service error", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     await expect(getOperatorReservations("access-token")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
+
+describe("operator reservation cancellation API client", () => {
+  const confirmedReservation = bookingList.reservations[0]!;
+
+  it("posts to the exact cancellation endpoint with reason and bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ reservation: confirmedReservation }), { status: 200 }),
+      );
+    await expect(
+      cancelOperatorReservation("access-token", "BKG-ABC123", "maintenance"),
+    ).resolves.toEqual(confirmedReservation);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE_URL}/operators/me/reservations/BKG-ABC123/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "maintenance" }),
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: "Bearer access-token",
+        },
+      },
+    );
+  });
+
+  it("URL-encodes the reservation code in the request path", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ reservation: confirmedReservation }), { status: 200 }),
+      );
+    await cancelOperatorReservation("access-token", "BKG A/B/C?");
+    expect(String(fetchMock.mock.calls[0]![0])).toContain(
+      `/operators/me/reservations/${encodeURIComponent("BKG A/B/C?")}/cancel`,
+    );
+  });
+
+  it("omits the reason when none is provided", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ reservation: confirmedReservation }), { status: 200 }),
+      );
+    await cancelOperatorReservation("access-token", "BKG-ABC123");
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+    expect(sent).not.toHaveProperty("reason");
+  });
+
+  it("omits a whitespace-only reason", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ reservation: confirmedReservation }), { status: 200 }),
+      );
+    await cancelOperatorReservation("access-token", "BKG-ABC123", "   ");
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("reason");
+  });
+
+  it("trims the reason before sending", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ reservation: confirmedReservation }), { status: 200 }),
+      );
+    await cancelOperatorReservation("access-token", "BKG-ABC123", "  venue closed  ");
+    const sent = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as Record<string, unknown>;
+    expect(sent).toEqual({ reason: "venue closed" });
+  });
+
+  it("rejects malformed successful cancellation responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservation: { id: confirmedReservation.id } }), {
+        status: 200,
+      }),
+    );
+    await expect(cancelOperatorReservation("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ reservations: [] }), { status: 200 }),
+    );
+    await expect(cancelOperatorReservation("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [404, "BOOKING_NOT_FOUND"],
+    [409, "ALREADY_CANCELLED"],
+    [422, "CANNOT_CANCEL_COMPLETED"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces %i cancellation responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(cancelOperatorReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
+      status,
+      code,
+    });
+  });
+
+  it("maps cancellation network failures to the operator service error", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(cancelOperatorReservation("access-token", "BKG-ABC123")).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the operator service.",
     } satisfies Partial<AuthApiError>);

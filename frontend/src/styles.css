@@ -411,6 +411,25 @@ input {
   color: var(--brand-dark);
   background: white;
 }
+.cancellation-confirmation label {
+  display: block;
+  margin-top: 0.9rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.cancellation-confirmation textarea {
+  display: block;
+  width: 100%;
+  min-height: 5rem;
+  margin-top: 0.35rem;
+  resize: vertical;
+  border: 1px solid #b9c9bf;
+  border-radius: 0.7rem;
+  padding: 0.75rem 0.9rem;
+  color: var(--ink);
+  background: #fbfdfb;
+}
 .notice.success {
   color: var(--brand-dark);
   background: var(--soft-brand);

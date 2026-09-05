@@ -164,10 +164,29 @@ function setField(id: string, value: string, eventName = "input") {
   });
 }
 
+function setTextarea(id: string, value: string) {
+  act(() => {
+    const element = container.querySelector<HTMLTextAreaElement>(`#${id}`)!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 function buttonWithText(text: string): HTMLButtonElement {
   return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
     button.textContent?.includes(text),
   )!;
+}
+
+function reservationCard(code: string): HTMLLIElement {
+  return Array.from(container.querySelectorAll<HTMLLIElement>(".reservation-card")).find((card) =>
+    card.textContent?.includes(code),
+  )!;
+}
+
+function reservationError(status: number, code: string, message: string): Response {
+  return new Response(JSON.stringify({ error: { code, message } }), { status });
 }
 
 beforeEach(() => {
@@ -1094,5 +1113,371 @@ describe("operator dashboard", () => {
     resolveReservations(reservationsResponse([reservation]));
     await settle();
     expect(container.textContent).not.toContain("BKG-ABC123");
+  });
+});
+
+describe("operator reservation cancellation", () => {
+  it("shows a cancel action only for CONFIRMED reservations", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(
+        reservationsResponse([reservation, cancelledReservation, uncountedReservation]),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    expect(reservationCard("BKG-ABC123").querySelector(".cancel-reservation-button")).toBeTruthy();
+    expect(reservationCard("BKG-CANCELLED").querySelector(".cancel-reservation-button")).toBeNull();
+    expect(reservationCard("BKG-OTHER789").querySelector(".cancel-reservation-button")).toBeNull();
+  });
+
+  it("opens an inline confirmation and closes it via Keep Reservation without an API call", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+
+    const confirmation = container.querySelector(".cancellation-confirmation");
+    expect(confirmation).toBeTruthy();
+    expect(confirmation?.textContent).toContain("Cancel reservation?");
+    expect(confirmation?.textContent).toContain("BKG-ABC123");
+    expect(confirmation?.textContent).toContain("Cancellation reason (optional)");
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      ".cancellation-confirmation textarea",
+    );
+    expect(textarea).toBeTruthy();
+    expect(textarea?.maxLength).toBe(500);
+    expect(buttonWithText("Confirm Cancellation")).toBeTruthy();
+
+    await act(async () => buttonWithText("Keep Reservation").click());
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("confirms cancellation with a trimmed reason and updates the reservation from the response", async () => {
+    const cancelled = {
+      ...reservation,
+      state: "CANCELLED" as const,
+      cancelReason: "venue closed",
+      cancelledAt: "2026-09-02T09:30:00.000Z",
+      updatedAt: "2026-09-02T09:30:00.000Z",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: cancelled }), { status: 200 }),
+      );
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+    setTextarea("cancellation-reason-12", "  venue closed  ");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock.mock.calls[4]![0]).toContain("/operators/me/reservations/BKG-ABC123/cancel");
+    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ reason: "venue closed" }),
+    });
+    const card = reservationCard("BKG-ABC123");
+    expect(card.textContent).toContain("CANCELLED");
+    expect(card.querySelector(".cancel-reservation-button")).toBeNull();
+    expect(card.textContent).toContain("venue closed");
+    expect(card.textContent).toContain(new Date(cancelled.cancelledAt as string).toLocaleString());
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("cancelled");
+  });
+
+  it("allows cancellation with an empty reason and omits it from the request", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            reservation: {
+              ...reservation,
+              state: "CANCELLED",
+              cancelledAt: "2026-09-02T09:30:00.000Z",
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(reservationCard("BKG-ABC123").textContent).toContain("CANCELLED");
+  });
+
+  it("shows cancellation submitting state and prevents duplicate submissions", async () => {
+    let resolveCancel!: (response: Response) => void;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCancel = resolve;
+      }),
+    );
+    const form = container.querySelector<HTMLFormElement>(".cancellation-confirmation")!;
+    await act(async () => form.requestSubmit());
+    expect(container.textContent).toContain("Cancelling...");
+    expect(
+      container.querySelector<HTMLButtonElement>(".cancellation-confirmation button[type=submit]")
+        ?.disabled,
+    ).toBe(true);
+    await act(async () => form.requestSubmit());
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    resolveCancel(
+      new Response(
+        JSON.stringify({
+          reservation: {
+            ...reservation,
+            state: "CANCELLED",
+            cancelledAt: "2026-09-02T09:30:00.000Z",
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    await settle();
+    expect(reservationCard("BKG-ABC123").textContent).toContain("CANCELLED");
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED", "Your operator session is no longer authorized"],
+    [403, "FORBIDDEN", "Your account is not authorized to cancel reservations"],
+    [404, "BOOKING_NOT_FOUND", "not found or is no longer in one of your facilities"],
+    [500, "INTERNAL_ERROR", "500 failure"],
+  ])(
+    "shows cancellation error %i and keeps the confirmation open",
+    async (status, code, message) => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+        .mockResolvedValueOnce(reservationsResponse([reservation]))
+        .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+        .mockResolvedValueOnce(reservationError(status, code, `${status} failure`));
+      await renderDashboard();
+      await act(async () => buttonWithText("Cancel Reservation").click());
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+      );
+      await settle();
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+      expect(container.querySelector(".cancellation-confirmation")).toBeTruthy();
+      expect(reservationCard("BKG-ABC123").querySelector(".cancel-reservation-button")).toBeNull();
+      expect(buttonWithText("Confirm Cancellation")).toBeTruthy();
+    },
+  );
+
+  it("shows a useful message and refreshes state when the reservation is already cancelled", async () => {
+    const alreadyCancelled = {
+      ...reservation,
+      state: "CANCELLED" as const,
+      cancelledAt: "2026-09-02T08:00:00.000Z",
+      updatedAt: "2026-09-02T08:00:00.000Z",
+    };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        reservationError(409, "ALREADY_CANCELLED", "This booking is already cancelled"),
+      )
+      .mockResolvedValueOnce(reservationsResponse([alreadyCancelled]));
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/reservations");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This reservation is already cancelled.",
+    );
+    const card = reservationCard("BKG-ABC123");
+    expect(card.textContent).toContain("CANCELLED");
+    expect(card.querySelector(".cancel-reservation-button")).toBeNull();
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+  });
+
+  it("shows a useful message and hides the action when the reservation is completed", async () => {
+    const completedNow = {
+      ...reservation,
+      state: "COMPLETED" as const,
+      updatedAt: "2026-09-02T08:00:00.000Z",
+    };
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        reservationError(422, "CANNOT_CANCEL_COMPLETED", "Completed bookings cannot be cancelled"),
+      )
+      .mockResolvedValueOnce(reservationsResponse([completedNow]));
+    await renderDashboard();
+    await act(async () => buttonWithText("Cancel Reservation").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Completed reservations cannot be cancelled.",
+    );
+    const card = reservationCard("BKG-ABC123");
+    expect(card.textContent).toContain("COMPLETED");
+    expect(card.querySelector(".cancel-reservation-button")).toBeNull();
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+  });
+
+  it("cancelling one reservation does not change another reservation", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation, zonedReservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            reservation: {
+              ...reservation,
+              state: "CANCELLED",
+              cancelReason: "maintenance",
+              cancelledAt: "2026-09-02T09:30:00.000Z",
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+    await renderDashboard();
+    const cardA = reservationCard("BKG-ABC123");
+    const cardB = reservationCard("BKG-ZONE456");
+    await act(async () =>
+      cardA.querySelector<HTMLButtonElement>(".cancel-reservation-button")!.click(),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(cardA.textContent).toContain("CANCELLED");
+    expect(cardA.querySelector(".cancel-reservation-button")).toBeNull();
+    expect(cardB.textContent).toContain("CONFIRMED");
+    expect(cardB.querySelector(".cancel-reservation-button")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("ignores a stale cancellation response when a newer cancellation is active", async () => {
+    let resolveA!: (response: Response) => void;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([reservation, zonedReservation]))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+
+    const cardA = reservationCard("BKG-ABC123");
+    const cardB = reservationCard("BKG-ZONE456");
+    await act(async () =>
+      cardA.querySelector<HTMLButtonElement>(".cancel-reservation-button")!.click(),
+    );
+    setTextarea("cancellation-reason-12", "first reason");
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveA = resolve;
+      }),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    expect(container.textContent).toContain("Cancelling...");
+
+    await act(async () =>
+      cardB.querySelector<HTMLButtonElement>(".cancel-reservation-button")!.click(),
+    );
+    expect(container.querySelector(".cancellation-confirmation")?.textContent).toContain(
+      "BKG-ZONE456",
+    );
+
+    resolveA(
+      new Response(
+        JSON.stringify({
+          reservation: {
+            ...reservation,
+            state: "CANCELLED",
+            cancelledAt: "2026-09-02T09:30:00.000Z",
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    await settle();
+
+    expect(cardA.textContent).toContain("Cancel Reservation");
+    expect(cardA.textContent).not.toContain("CANCELLED");
+    expect(container.querySelector(".cancellation-confirmation")?.textContent).toContain(
+      "BKG-ZONE456",
+    );
+    expect(container.textContent).not.toContain("first reason");
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          reservation: {
+            ...zonedReservation,
+            state: "CANCELLED",
+            cancelledAt: "2026-09-02T10:00:00.000Z",
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+
+    expect(cardB.textContent).toContain("CANCELLED");
+    expect(cardB.querySelector(".cancel-reservation-button")).toBeNull();
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });

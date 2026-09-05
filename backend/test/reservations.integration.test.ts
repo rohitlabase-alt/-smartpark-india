@@ -580,6 +580,168 @@ describe("POST /api/v1/reservations/:code/cancel", () => {
   });
 });
 
+describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () => {
+  let operatorA: AuthResponse;
+  let operatorB: AuthResponse;
+  let regularUser: AuthResponse;
+  let facilityA1: ParkingFacility;
+  let facilityA2: ParkingFacility;
+  let facilityB: ParkingFacility;
+
+  beforeAll(async () => {
+    operatorA = await registerOperatorSession("op-cancel-A");
+    operatorB = await registerOperatorSession("op-cancel-B");
+    regularUser = await registerSession("op-cancel-user");
+    facilityA1 = await createFacility(operatorA.accessToken);
+    facilityA2 = await createFacility(operatorA.accessToken);
+    facilityB = await createFacility(operatorB.accessToken);
+  });
+
+  async function makeBooking(facilityId: number, dayOffset: number): Promise<string> {
+    const created = await createBooking(
+      regularUser.accessToken,
+      WINDOW(facilityId, undefined, dayOffset),
+    );
+    expect(created.status).toBe(201);
+    return (created.body as BookingResponse).reservation.reservationCode;
+  }
+
+  function cancelEndpoint(code: string): string {
+    return `/api/v1/operators/me/reservations/${code}/cancel`;
+  }
+
+  it("rejects unauthenticated requests", async () => {
+    const code = await makeBooking(facilityA1.id, 14);
+    const res = await jsonPost(cancelEndpoint(code), {});
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects a regular (non-operator) user with 403", async () => {
+    const code = await makeBooking(facilityA1.id, 14);
+    const res = await jsonPost(cancelEndpoint(code), {}, regularUser.accessToken);
+    expect(res.status).toBe(403);
+  });
+
+  it("cancels a CONFIRMED booking in the operator's own facility and persists it", async () => {
+    const code = await makeBooking(facilityA1.id, 15);
+    const res = await jsonPost(
+      cancelEndpoint(code),
+      { reason: "operator override" },
+      operatorA.accessToken,
+    );
+    expect(res.status).toBe(200);
+    const reservation = (res.body as BookingResponse).reservation;
+    expect(reservation.reservationCode).toBe(code);
+    expect(reservation.state).toBe("CANCELLED");
+    expect(reservation.cancelReason).toBe("operator override");
+    expect(reservation.cancelledAt).toBeTruthy();
+    expect(JSON.stringify(res.body)).not.toMatch(/name|email/i);
+
+    const { rows } = await getPool().query<{
+      state: string;
+      cancel_reason: string | null;
+      cancelled_at: Date | null;
+    }>(`SELECT state, cancel_reason, cancelled_at FROM reservations WHERE reservation_code = $1`, [
+      code,
+    ]);
+    expect(rows[0]!.state).toBe("CANCELLED");
+    expect(rows[0]!.cancel_reason).toBe("operator override");
+    expect(rows[0]!.cancelled_at).toBeTruthy();
+  });
+
+  it("trims a padded cancellation reason", async () => {
+    const code = await makeBooking(facilityA1.id, 15);
+    const res = await jsonPost(
+      cancelEndpoint(code),
+      { reason: "  venue closed  " },
+      operatorA.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as BookingResponse).reservation.cancelReason).toBe("venue closed");
+  });
+
+  it("stores null for an empty or whitespace-only reason", async () => {
+    const code = await makeBooking(facilityA1.id, 16);
+    const res = await jsonPost(cancelEndpoint(code), { reason: "   " }, operatorA.accessToken);
+    expect(res.status).toBe(200);
+    expect((res.body as BookingResponse).reservation.cancelReason).toBeNull();
+  });
+
+  it("cancels bookings across every facility the operator owns", async () => {
+    const codeA1 = await makeBooking(facilityA1.id, 16);
+    const codeA2 = await makeBooking(facilityA2.id, 17);
+    const rA1 = await jsonPost(cancelEndpoint(codeA1), {}, operatorA.accessToken);
+    const rA2 = await jsonPost(cancelEndpoint(codeA2), {}, operatorA.accessToken);
+    expect(rA1.status).toBe(200);
+    expect(rA2.status).toBe(200);
+    expect((rA1.body as BookingResponse).reservation.state).toBe("CANCELLED");
+    expect((rA2.body as BookingResponse).reservation.state).toBe("CANCELLED");
+  });
+
+  it("cannot cancel another operator's reservation (404, no existence disclosure)", async () => {
+    const code = await makeBooking(facilityB.id, 17);
+    const res = await jsonPost(cancelEndpoint(code), { reason: "sneaky" }, operatorA.accessToken);
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("BOOKING_NOT_FOUND");
+    const { rows } = await getPool().query<{ state: string }>(
+      `SELECT state FROM reservations WHERE reservation_code = $1`,
+      [code],
+    );
+    expect(rows[0]!.state).toBe("CONFIRMED");
+  });
+
+  it("404 for a code that does not belong to any of the operator's facilities", async () => {
+    const res = await jsonPost(cancelEndpoint("BKG-NOPE123"), {}, operatorA.accessToken);
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("BOOKING_NOT_FOUND");
+  });
+
+  it("409 double cancellation by the same operator", async () => {
+    const code = await makeBooking(facilityA1.id, 18);
+    const first = await jsonPost(cancelEndpoint(code), {}, operatorA.accessToken);
+    expect(first.status).toBe(200);
+    const again = await jsonPost(cancelEndpoint(code), {}, operatorA.accessToken);
+    expect(again.status).toBe(409);
+    expect(errorCode(again.body)).toBe("ALREADY_CANCELLED");
+  });
+
+  it("422 completed booking cannot be cancelled", async () => {
+    const code = await makeBooking(facilityA1.id, 19);
+    await getPool().query(
+      "UPDATE reservations SET state = 'COMPLETED' WHERE reservation_code = $1",
+      [code],
+    );
+    const res = await jsonPost(cancelEndpoint(code), {}, operatorA.accessToken);
+    expect(res.status).toBe(422);
+    expect(errorCode(res.body)).toBe("CANNOT_CANCEL_COMPLETED");
+  });
+
+  it("customer cancellation endpoint is unaffected", async () => {
+    const code = await makeBooking(facilityA1.id, 20);
+    const res = await jsonPost(`/api/v1/reservations/${code}/cancel`, {}, regularUser.accessToken);
+    expect(res.status).toBe(200);
+    expect((res.body as BookingResponse).reservation.state).toBe("CANCELLED");
+  });
+
+  it("concurrent cancels yield exactly one success (race-safe)", async () => {
+    const code = await makeBooking(facilityA1.id, 14);
+    const [a, b] = await Promise.all([
+      jsonPost(cancelEndpoint(code), {}, operatorA.accessToken),
+      jsonPost(cancelEndpoint(code), {}, operatorA.accessToken),
+    ]);
+    const successes = [a.status, b.status].filter((s) => s === 200).length;
+    const conflicts = [a.status, b.status].filter((s) => s === 409).length;
+    expect(successes + conflicts).toBe(2);
+    expect(successes).toBe(1);
+    expect(conflicts).toBe(1);
+    const { rows } = await getPool().query<{ state: string }>(
+      `SELECT state FROM reservations WHERE reservation_code = $1`,
+      [code],
+    );
+    expect(rows[0]!.state).toBe("CANCELLED");
+  });
+});
+
 describe("Concurrency / rollback safety", () => {
   it("two overlapping inserts cannot both succeed (exclusion constraint), and no partial row is left", async () => {
     const userA = await registerSession("conc-userA");
