@@ -1,6 +1,6 @@
 # SmartPark India — Project State
 
-Last updated: 2026-08-31 (Session 6 — Phase 2C)
+Last updated: 2026-09-06 (Session 7 — Phase 7 mock payment foundation)
 Read before every session alongside SESSION_HANDOFF.md, DECISIONS.md, ROADMAP.md.
 
 ## Phase Status
@@ -11,29 +11,35 @@ Phase 1A: COMPLETE   (workspace foundation)
 Phase 1B: COMPLETE   (development infrastructure foundation)
 Phase 2A: COMPLETE   (auth/RBAC/user foundation + parking foundation)
 Phase 2B: COMPLETE   (parking slots/zones + manual availability foundation)
-Phase 2C: COMPLETE   (this session — booking/reservation foundation, non-payment subset)
-Phase 2/6: NOT STARTED (documents upload/verify, remaining operator/admin APIs, availability WS, payments/tokens)
-Application business features: PARTIAL (auth + operator/parking + slots/manual availability + bookings only; no payments/tokens/QR/IoT)
+Phase 2C: COMPLETE   (booking/reservation foundation; superseded by Phase 7 payment lifecycle)
+Phase 7:  COMPLETE   (this session — mock payment foundation: PENDING_PAYMENT lifecycle + initiate/verify + idempotency)
+Application business features: PARTIAL (auth + operator/parking + slots/manual availability + bookings + mock payments only; no tokens/QR/IoT/refunds)
 ```
 
 ## Repository Status
-- Baseline docs `bc3264c`, `45eb0e4`, `7bdbe67`; Phase 1A `a8d3d8a`; Phase 1B `819c068`; Phase 2A `567443a`.
-- Phase 2B committed `d6c14d7` (`feat: implement Phase 2B parking availability foundation`).
-- Phase 2C committed this session (`feat: implement Phase 2C booking foundation`).
-- Working tree: CLEAN (verified before/after commit).
+- Baseline docs `bc3264c`, `45eb0e4`, `7bdbe67`; Phase 1A `a8d3d8a`; Phase 1B `819c068`; Phase 2A `567443a`; Phase 2B `d6c14d7`; Phase 2C `feat: implement Phase 2C booking foundation`.
+- Operator cancellation work (backend + frontend) landed in commits `19cb366`/`7579011`/`9fa7b52` (operator reservation management + cancellation).
+- Current work (Phase 7 mock payments) is **uncommitted** (per instruction: do not commit/push).
 
-## Completed (Phase 2C)
-- **Bookings/reservations (`bookings`):** under `/api/v1/reservations` (auth required, user-owned) — `GET /` own history, `POST /` create (validates facility exists+active, slot exists+belongs to facility+`reservations_enabled`+bookable status `AVAILABLE`/`RESERVED`, valid future range; inserts an immediately-`CONFIRMED` booking with `confirmed_at` and a generated `BKG-` code), `GET /:code` own detail, `POST /:code/cancel` (owner-only, transactional, lifecycle-guarded). Ownership enforced server-side (list/detail/cancel only own bookings; anyone else's → `404 BOOKING_NOT_FOUND`, no enumeration). Strict zod schemas reject unknown keys. Booking does **not** flip `parking_slots.status` to RESERVED (manual availability stays authoritative).
-- **Double-booking guard (primary, race-safe):** btree_gist exclusion constraint `reservations_no_overlap` on `(slot_id, [starts_at, ends_at))` for `state='CONFIRMED'`; violations → `409 RESERVATION_CONFLICT` (`23P01`). Cross-cutting `unprocessable` (422) `HttpError` helper added for invalid state transitions.
-- **DB:** migration `0005_phase2c_booking_foundation.sql` — `reservations` (§2.12 non-payment subset, D-034) with `state` CHECK (`CONFIRMED/CANCELLED/COMPLETED`), nullable `amount`/`payment_status` (unused), `ends_at > starts_at` CHECK, indexes, and the partial btree_gist exclusion. Applied + idempotent on dev DB and CI.
-- **Shared contracts:** `packages/shared` grows `RESERVATION_STATES`, `ReservationState`, `BookingStatus`, `Reservation`, `CreateBookingRequest`, `BookingResponse`, `BookingListResponse`.
-- **Quality/testing:** 18 new DB-backed tests in `reservations.integration.test.ts` (migration schema/vocabulary/exclusion/range; creation 401/400/404/mismatch/201/409-overlap/400-occupied/facility-level; own list + detail; IDOR 404; cancel owner/409-repeat/422-completed/404-other; concurrency exactly-one-success). Runs serially with prior DB suites. All 89 api tests pass (71 existing + 18 new).
+## Completed (Phase 7 — mock payment foundation)
+- **Payments (`payments` module, D-035):** under `/api/v1/payments` (auth required, user-owned) —
+  - `POST /initiate { reservationCode }` (+ optional `Idempotency-Key`): reservation must be `PENDING_PAYMENT` (`409 PAYMENT_NOT_PENDING`) with a non-null `amount` (`409 PAYMENT_UNAVAILABLE`); creates a `payments` row (provider `MOCK`, deterministic `providerTxnId` `MOCK-<code>-<amount>`, status `PENDING`); with an `Idempotency-Key` the key claim + payment creation are atomic (15 min TTL) and a repeat reuses the existing payment.
+  - `POST /:txnId/verify`: one DB transaction; ownership via join to `reservations.user_id` (404 `PAYMENT_NOT_FOUND`, no enumeration); provider SUCCESS → payment `SUCCESS` + reservation `CONFIRMED` (`confirmed_at`, `payment_status='SUCCESS'`) + `CHARGE`/`SUCCESS` transaction; provider FAILED → payment `FAILED` + reservation `FAILED` + `CHARGE`/`FAILED` transaction. Re-verify SUCCESS idempotent; re-verify FAILED → `409 PAYMENT_ALREADY_FAILED`; non-pending reservation → `409 RESERVATION_NOT_CONFIRMABLE` (full rollback). `PaymentProvider` + deterministic `MockPaymentProvider` (failure iff txn id ends with `__FAIL__`, no secrets/external API).
+- **Reservation lifecycle rework (`bookings`):** create → `PENDING_PAYMENT` with computed `amount` (from `parking_facilities.pricing` JSONB `hourlyRate`, default ₹100/hr — D-035) and `payment_status='INITIATED'`; `confirmOnPayment`/`markFailed` transitions; customer cancellation allows `PENDING_PAYMENT` + `CONFIRMED` (no refund — D-035).
+- **DB:** migration `0006_phase7_mock_payment.sql` — `reservations_state_check` widened to full §2.12 vocabulary; `reservations_no_overlap` rewritten as `WHERE state IN ('PENDING_PAYMENT','CONFIRMED','ACTIVE')` (pending holds the slot; payment-confirm to same slot/window does not self-conflict); `reservations_amount_check` (NULL or `>= 0`); new `payments` (§2.15), `transactions` (§2.16), `payment_idempotency_keys` (§2.17). Applied + idempotent on dev DB and CI.
+- **Shared contracts:** `Payment`, `InitiatePaymentRequest/Response`, `VerifyPaymentResponse`, `PAYMENT_STATUSES/PROVIDERS`, transaction kinds/statuses; `Reservation` gains required `amount: number | null` + `paymentStatus: PaymentStatus | null` (frontend fixtures/tests updated).
+- **Quality/testing:** 130 api tests (23 new `payments.integration.test.ts` + updated `reservations.integration.test.ts`), all green; full `npm test` green; typecheck/build/lint/prettier clean across all 4 workspaces.
+
+## Previous phases (still true)
+- **Phase 2C (D-034):** `reservations` created by migration `0005`; superseded in part by Phase 7 (see Phase 7 rows above). Exclusion constraint + IDOR-safe ownership carried forward.
+- **Phase 2B (D-033):** zones/slots/manual-availability foundation; `availability_state` MANUAL-only for now.
+- **Phase 2A (D-030/D-031/D-032):** auth/RBAC, Argon2id, JWT sessions, operator/parking + documents foundations, DB-backed test infra.
+- Operator reservation management + cancellation (backend + frontend dashboard) landed post-2C under `19cb366`/`7579011`/`9fa7b52`.
 
 ## Pending (next logical work)
-- **Phase 2D / next:** tokens/payments (QR/TTL, `confirm` endpoint, remaining reservation states `ACTIVE`/`EXPIRED`/`FAILED`, `amount`/`payment_status`), maps/geolocation, IoT ingestion, blockchain, offline gate mode, dashboards, gate staff, notifications, deployment. The availability-engine phase introduces multi-source confidence/freshness-window for real `isLive`.
-- Deferred by design from 2C: `confirm` endpoint, payments/refunds, parking tokens, QR codes, gate entry, payment/gate reservation states, `vehicle_id` (no `vehicles` table), `amount`/`payment_status` usage.
-- Deferred by design from 2B: zones CRUD (tables exist; management API later), freshness-window `isLive` policy.
-- Deferred by design from 2A: password reset (needs email), httpOnly-cookie refresh (needs frontend), admin/verifier approval flows (Phase 6), rate limiting + request-ids (API_SPEC §6/ARCHITECTURE §3).
+- **Tokens phase (Phase 2D / roadmap next):** parking tokens/QR codes, gate entry, `POST /reservations/{code}/confirm` (or continue verifying-via-payments), `ACTIVE`/`EXPIRED` reservation transitions, refunds (schema already permits `REFUND`/`REVERSAL`; mock doesn't reverse — D-035), real payment provider.
+- Maps/geolocation + cities/states/areas reference data; IoT ingestion → multi-source freshness/`isLive`; blockchain; offline gate mode; dashboards; gate staff; notifications; deployment.
+- Deferred by design: `vehicle_id` (no `vehicles` table), zones CRUD management API (tables exist), password reset, httpOnly-cookie refresh, admin/verifier approval flows (Phase 6), rate limiting + request-ids.
 - Infra teardown: `docker compose down` after active work (`npm run infra:up` to restart).
 
 ## Known Bugs / Issues
@@ -41,10 +47,9 @@ Application business features: PARTIAL (auth + operator/parking + slots/manual a
 
 ## Risks
 - `refresh_tokens` table is a schema add not yet mirrored in `DATABASE.md` (D-030 documents it; upstream during a later phase).
-- Geospatial index on `parking_facilities` deliberately deferred (DATABASE.md §2.6).
-- Role catalogue: only 3 of the 6 documented roles seeded; the rest land with their phases.
+- Mock payments are deterministic (no real money); a real provider will need external txn-id mapping + webhooks/async verify, which the `PaymentProvider` seam is designed for.
 - `availability_state` is MANUAL-only; freshness/confidence/`isLive` semantics tighten when IoT/API/RESERVATION sources land.
-- `reservations` exclusion predicate currently covers `state='CONFIRMED'` only; `'ACTIVE'` is added when ACTIVE bookings land (D-034).
+- Refunds are explicitly out of scope of the mock (D-035) — cancellation leaves the `CHARGE` as-is; must be addressed before real money moves.
 
 ## Commands
 `START SESSION` → read this file + SESSION_HANDOFF + DECISIONS + ROADMAP.

@@ -87,10 +87,10 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 | GET | /reservations | user | own reservation history |
 | POST | /reservations (check availability then create PENDING_PAYMENT) | user | create reservation (idempotent) |
 | POST | /reservations/{code}/confirm | user | confirm after payment success |
-| POST | /reservations/{code}/cancel | user | cancel (refund path in mock) |
+| POST | /reservations/{code}/cancel | user | cancel (no refund in mock — D-035) |
 | GET | /reservations/{code} | user/operator/admin | detail |
 
-> **Implementation status (Phase 2C — booking foundation):** `GET /reservations`, `POST /reservations`, `GET /reservations/{code}`, and `POST /reservations/{code}/cancel` are **implemented** (mounted at `/api/v1/reservations`, user-authenticated, ownership enforced server-side — a user may list/detail/cancel only their own bookings, 404 `BOOKING_NOT_FOUND` on anyone else's). There is **no payment step in Phase 2C**: creation immediately produces a `CONFIRMED` booking (no `PENDING_PAYMENT`, no `confirm` endpoint) and does **not** mint tokens/QR codes. The non-payment lifecycle is `CONFIRMED → CANCELLED | COMPLETED`; `POST /reservations/{code}/confirm`, tokens, and the remaining states (`ACTIVE`/`EXPIRED`/`FAILED`) are deferred to the payments/tokens phase. Double-booking is enforced by the DB-level btree_gist exclusion constraint on `(slot_id, [starts_at, ends_at))` for `CONFIRMED` → `409 RESERVATION_CONFLICT`. `GET /operators/me/reservations` is also implemented for `PARKING_OPERATOR` users and returns only reservations joined to facilities owned by their operator organization.
+> **Implementation status (Phase 7 — mock payment lifecycle):** `GET /reservations`, `POST /reservations`, `GET /reservations/{code}`, and `POST /reservations/{code}/cancel` are **implemented** (mounted at `/api/v1/reservations`, user-authenticated, ownership enforced server-side — a user may list/detail/cancel only their own bookings, 404 `BOOKING_NOT_FOUND` on anyone else's). Creation produces a `PENDING_PAYMENT` booking with a computed `amount` (`facility.pricing` JSONB's `hourlyRate`, default ₹100/hr — see `DECISIONS.md` D-035) and `paymentStatus: "INITIATED"`; it becomes `CONFIRMED` only after a successful `POST /payments/{txnId}/verify`. Customer cancellation is allowed while `PENDING_PAYMENT` or `CONFIRMED` (no refund workflow — the mock never reverses the CHARGE; D-035). Tokens/QR codes and the remaining states (`ACTIVE`/`EXPIRED`) are deferred to the tokens phase. Double-booking is enforced by the DB-level btree_gist exclusion constraint on `(slot_id, [starts_at, ends_at))` for `PENDING_PAYMENT`/`CONFIRMED`/`ACTIVE` → `409 RESERVATION_CONFLICT`. `GET /operators/me/reservations` is also implemented for `PARKING_OPERATOR` users and returns only reservations joined to facilities owned by their operator organization.
 
 ### tokens
 | method | path | role | description |
@@ -107,6 +107,11 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 |---|---|---|---|
 | POST | /payments/initiate | user | initiate mock payment for reservation |
 | POST | /payments/{txnId}/verify | user | verify mock payment result |
+
+> **Implementation status (Phase 7 — mock payment flow):** both endpoints are **implemented** (mounted at `/api/v1/payments`, user-authenticated, server-side ownership enforced — initiating/verifying another user's reservation is 404 `PAYMENT_NOT_FOUND`, never an IDOR leak).
+>
+> - `POST /payments/initiate { reservationCode, [Idempotency-Key] }` → `200 { payment }`. Reserved when the reservation is `PENDING_PAYMENT` and has a non-zero `amount`; otherwise `409 PAYMENT_NOT_PENDING` / `409 PAYMENT_UNAVAILABLE`. The provider (`MOCK`) derives a deterministic `providerTxnId` (`MOCK-<code>-<amount>`). A repeat with the same `Idempotency-Key` reuses the existing payment (no duplicate attempt; key TTL 15 min).
+> - `POST /payments/{txnId}/verify` → `200 { payment, reservation }`. `MOCK` verification: `providerTxnId` ending in `__FAIL__` → `FAILED`, otherwise `SUCCESS`. SUCCESS is atomic: payment → `SUCCESS`, reservation → `CONFIRMED` (`paymentStatus: "SUCCESS"`, `confirmedAt` set), one `CHARGE`/`SUCCESS` ledger transaction — all in a single DB transaction. FAILED is atomic too: payment → `FAILED`, reservation → `FAILED` (never CONFIRMED), one `CHARGE`/`FAILED` transaction. Re-verifying a SUCCESS payment is idempotent; re-verifying a FAILED one → `409 PAYMENT_ALREADY_FAILED`; verifying when the reservation is no longer pending → `409 RESERVATION_NOT_CONFIRMABLE` (the whole verification rolls back).
 
 ### operators
 | method | path | role | description |

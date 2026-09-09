@@ -18,6 +18,7 @@ import type {
 } from "@smartpark/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../../http/errors.js";
 import { withTransaction } from "../../db.js";
+import type { FacilityRow } from "../parking/facilities.repository.js";
 import { facilitiesRepository } from "../parking/facilities.repository.js";
 import { slotsRepository } from "../parking/slots.repository.js";
 import { reservationsRepository, toReservationDto } from "./reservations.repository.js";
@@ -25,15 +26,63 @@ import { reservationsRepository, toReservationDto } from "./reservations.reposit
 /** Slot statuses a booking may occupy (docs/DATABASE.md §2.8). */
 const BOOKABLE_SLOT_STATUSES = new Set(["AVAILABLE", "RESERVED"]);
 
+/**
+ * Documented fallback hourly rate (INR) when a facility's `pricing` JSONB has
+ * no usable `hourlyRate`. Phase 7 activates pricing (docs/DECISIONS.md D-035);
+ * the JSONB contract mirrors `pricing_rules` §2.9 as `{ hourlyRate }`. A fixed,
+ * documented fallback keeps the mock flow deterministic without a pricing
+ * engine and without silently inventing per-facility business rules.
+ */
+export const DEFAULT_MOCK_HOURLY_RATE = 100;
+
+/**
+ * Reads an hourly rate (INR/hour) from a facility's `pricing` JSONB. Expected
+ * documented shape (D-035): `{ "hourlyRate": <positive number> }`. Returns a
+ * positive finite number, or the documented default when absent/invalid.
+ */
+export function readHourlyRate(pricing: unknown): number {
+  if (
+    pricing &&
+    typeof pricing === "object" &&
+    "hourlyRate" in pricing &&
+    typeof (pricing as { hourlyRate: unknown }).hourlyRate === "number"
+  ) {
+    const rate = (pricing as { hourlyRate: number }).hourlyRate;
+    if (Number.isFinite(rate) && rate > 0) {
+      return rate;
+    }
+  }
+  return DEFAULT_MOCK_HOURLY_RATE;
+}
+
+/**
+ * Reservation amount (INR), hours-based from the facility's hourlyRate
+ * (docs/DATABASE.md §2.9/§2.12). Hours are fractional-real duration rounded up
+ * to a whole hour (minimum 1); the result is rounded to 2 decimals to avoid
+ * float drift (docs/DECISIONS.md D-008).
+ */
+export function calculateReservationAmount(
+  facility: FacilityRow,
+  startsAt: Date,
+  endsAt: Date,
+): number {
+  const hours = Math.max(1, Math.ceil((endsAt.getTime() - startsAt.getTime()) / 3_600_000));
+  const rate = readHourlyRate(facility.pricing);
+  return Math.round(hours * rate * 100) / 100;
+}
+
 function generateReservationCode(): string {
   return `BKG-${randomBytes(6).toString("hex").toUpperCase()}`;
 }
 
 export const bookingsService = {
   /**
-   * Creates a CONFIRMED booking for the authenticated user inside a single
-   * transaction. The DB exclusion constraint on (slot_id, [starts_at, ends_at))
-   * is the primary double-booking guard and is the authority on overlap.
+   * Creates a PENDING_PAYMENT reservation for the authenticated user inside a
+   * single transaction. The DB exclusion constraint on (slot_id, [starts_at,
+   * ends_at)) — now covering PENDING_PAYMENT/CONFIRMED/ACTIVE — is the primary
+   * double-booking guard and the authority on overlap; it also protects the
+   * slot while payment is pending. The amount is derived hours-based from the
+   * facility's pricing (D-035).
    */
   async createBooking(userId: number, input: CreateBookingRequest): Promise<BookingResponse> {
     const startsAt = new Date(input.startsAt);
@@ -49,6 +98,8 @@ export const bookingsService = {
     if (!facility || !facility.isActive) {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");
     }
+
+    const amount = calculateReservationAmount(facility, startsAt, endsAt);
 
     return withTransaction(async (client) => {
       let slotId: number | null = null;
@@ -76,6 +127,7 @@ export const bookingsService = {
         slotId,
         startsAt: new Date(input.startsAt),
         endsAt: new Date(input.endsAt),
+        amount,
       });
       return { reservation: toReservationDto(created) };
     });
@@ -97,12 +149,14 @@ export const bookingsService = {
 
   /**
    * Cancels a booking the caller owns. Transactional; guards lifecycle state:
-   * only CONFIRMED bookings can be cancelled (CANCELLED and COMPLETED are not
-   * cancellable). No refund/payment logic in Phase 2C.
+   * PENDING_PAYMENT and CONFIRMED bookings can be cancelled; CANCELLED is a
+   * 409 repeat and COMPLETED is non-cancellable (422). No live refund path in
+   * the mock: a successful payment's CHARGE transaction is never reversed by
+   * cancellation here (docs/DECISIONS.md D-035 documents this).
    */
   async cancelBooking(userId: number, code: string, reason?: string): Promise<BookingResponse> {
     return withTransaction(async (client) => {
-      const existing = await reservationsRepository.findByCodeForUser(code, userId);
+      const existing = await reservationsRepository.findByCodeForUserTx(client, code, userId);
       if (!existing) {
         throw notFound("BOOKING_NOT_FOUND", "Booking not found");
       }
@@ -111,6 +165,9 @@ export const bookingsService = {
       }
       if (existing.state === "COMPLETED") {
         throw unprocessable("CANNOT_CANCEL_COMPLETED", "Completed bookings cannot be cancelled");
+      }
+      if (existing.state !== "PENDING_PAYMENT" && existing.state !== "CONFIRMED") {
+        throw conflict("CANNOT_CANCEL", "This booking cannot be cancelled in its current state");
       }
       const updated = await reservationsRepository.updateState(client, existing.id, {
         state: "CANCELLED",

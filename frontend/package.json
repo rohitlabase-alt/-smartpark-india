@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "npm run build -w @smartpark/shared",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

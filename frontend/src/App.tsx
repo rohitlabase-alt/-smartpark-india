@@ -25,6 +25,7 @@ import {
   fetchReservations,
   getReservation,
 } from "./api/reservations";
+import { initiatePayment, verifyPayment } from "./api/payments";
 import {
   AuthApiError,
   clearMemorySession,
@@ -110,6 +111,48 @@ function reservationDetailErrorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Unable to load reservation details.";
 }
 
+function formatCurrency(amount: number | null): string {
+  return typeof amount === "number" && Number.isFinite(amount) ? `₹${amount.toFixed(2)}` : "";
+}
+
+function paymentErrorMessage(cause: unknown): string {
+  if (cause instanceof AuthApiError) {
+    switch (cause.code) {
+      case "UNAUTHORIZED":
+        return "You are not authorized to make this payment.";
+      case "BOOKING_NOT_FOUND":
+        return "This reservation could not be found.";
+      case "PAYMENT_NOT_PENDING":
+        return "This reservation is no longer waiting for payment.";
+      case "PAYMENT_UNAVAILABLE":
+        return "This reservation has no amount to charge.";
+      case "PAYMENT_NOT_FOUND":
+        return "This payment could not be found.";
+      case "PAYMENT_ALREADY_FAILED":
+        return "This payment already failed. Please refresh and try again.";
+      case "RESERVATION_NOT_CONFIRMABLE":
+        return "This reservation can no longer be confirmed.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Unable to process this payment.";
+}
+
+function generateIdempotencyKey(): string {
+  const cryptoImpl = globalThis.crypto;
+  if (cryptoImpl && typeof cryptoImpl.randomUUID === "function") {
+    return cryptoImpl.randomUUID();
+  }
+  if (cryptoImpl && typeof cryptoImpl.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    cryptoImpl.getRandomValues(bytes);
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+  }
+  return `idempotency-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>("availability");
   const [session, setSession] = useState<AuthSession>();
@@ -134,6 +177,12 @@ export default function App() {
     useState<ReservationDetailState>("initial");
   const [reservationDetailError, setReservationDetailError] = useState("");
   const reservationDetailRequestId = useRef(0);
+  const [paymentTxnId, setPaymentTxnId] = useState<string>();
+  const [paymentIdempotencyKey, setPaymentIdempotencyKey] = useState<string>();
+  const [paymentInitSubmitting, setPaymentInitSubmitting] = useState(false);
+  const [paymentVerifySubmitting, setPaymentVerifySubmitting] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+  const [paymentSuccess, setPaymentSuccess] = useState("");
 
   useEffect(() => {
     const existing = getMemorySession();
@@ -210,6 +259,11 @@ export default function App() {
       setSession(undefined);
       setSessionState("unauthenticated");
       setScreen("availability");
+      setCancellationCode(undefined);
+      setCancellationSubmitting(false);
+      setCancellationError("");
+      setCancellationSuccess("");
+      resetPaymentState();
     }
   }
 
@@ -226,6 +280,7 @@ export default function App() {
     setReservationDetail(undefined);
     setReservationDetailState("initial");
     setReservationDetailError("");
+    resetPaymentState();
     reservationDetailRequestId.current += 1;
     try {
       const result = await fetchReservations(session.accessToken);
@@ -250,6 +305,7 @@ export default function App() {
     setReservationDetail(undefined);
     setReservationDetailState("loading");
     setReservationDetailError("");
+    resetPaymentState();
     try {
       const result = await getReservation(session.accessToken, code);
       if (requestId !== reservationDetailRequestId.current) return;
@@ -350,6 +406,82 @@ export default function App() {
       setCancellationError(cancellationErrorMessage(cause));
     } finally {
       setCancellationSubmitting(false);
+    }
+  }
+
+  function resetPaymentState(): void {
+    setPaymentTxnId(undefined);
+    setPaymentIdempotencyKey(undefined);
+    setPaymentInitSubmitting(false);
+    setPaymentVerifySubmitting(false);
+    setPaymentError("");
+    setPaymentSuccess("");
+  }
+
+  async function handleInitiatePayment(): Promise<void> {
+    if (
+      sessionState !== "authenticated" ||
+      !session ||
+      !reservationDetail ||
+      paymentInitSubmitting
+    ) {
+      return;
+    }
+    const idempotencyKey = paymentIdempotencyKey ?? generateIdempotencyKey();
+    if (!paymentIdempotencyKey) {
+      setPaymentIdempotencyKey(idempotencyKey);
+    }
+    setPaymentInitSubmitting(true);
+    setPaymentError("");
+    setPaymentSuccess("");
+    try {
+      const response = await initiatePayment(
+        session.accessToken,
+        reservationDetail.reservationCode,
+        idempotencyKey,
+      );
+      setPaymentTxnId(response.payment.providerTxnId ?? undefined);
+    } catch (cause) {
+      setPaymentError(paymentErrorMessage(cause));
+    } finally {
+      setPaymentInitSubmitting(false);
+    }
+  }
+
+  async function handleVerifyPayment(): Promise<void> {
+    if (
+      sessionState !== "authenticated" ||
+      !session ||
+      !reservationDetail ||
+      !paymentTxnId ||
+      paymentVerifySubmitting
+    ) {
+      return;
+    }
+    setPaymentVerifySubmitting(true);
+    setPaymentError("");
+    setPaymentSuccess("");
+    try {
+      const response = await verifyPayment(session.accessToken, paymentTxnId);
+      setReservationDetail(response.reservation);
+      setReservations((current) =>
+        current.map((reservation) =>
+          reservation.reservationCode === response.reservation.reservationCode
+            ? response.reservation
+            : reservation,
+        ),
+      );
+      if (response.payment.status === "FAILED" || response.reservation.state === "FAILED") {
+        setPaymentError("The payment failed and this reservation could not be confirmed.");
+        return;
+      }
+      setPaymentSuccess(
+        `Payment verified. Reservation ${response.reservation.reservationCode} is confirmed.`,
+      );
+    } catch (cause) {
+      setPaymentError(paymentErrorMessage(cause));
+    } finally {
+      setPaymentVerifySubmitting(false);
     }
   }
 
@@ -463,9 +595,16 @@ export default function App() {
             detailState={reservationDetailState}
             error={reservationsError}
             onConfirmCancellation={() => void handleConfirmCancellation()}
+            onInitiatePayment={() => void handleInitiatePayment()}
             onKeepReservation={handleKeepReservation}
             onRequestCancellation={handleRequestCancellation}
+            onVerifyPayment={() => void handleVerifyPayment()}
             onViewDetails={(code) => void handleViewReservationDetails(code)}
+            paymentError={paymentError}
+            paymentInitSubmitting={paymentInitSubmitting}
+            paymentSuccess={paymentSuccess}
+            paymentTxnId={paymentTxnId}
+            paymentVerifySubmitting={paymentVerifySubmitting}
             state={reservationsState}
           />
         ) : screen === "operator" &&
@@ -568,9 +707,16 @@ function ReservationsView({
   detailState,
   error,
   onConfirmCancellation,
+  onInitiatePayment,
   onKeepReservation,
   onRequestCancellation,
+  onVerifyPayment,
   onViewDetails,
+  paymentError,
+  paymentInitSubmitting,
+  paymentSuccess,
+  paymentTxnId,
+  paymentVerifySubmitting,
   state,
 }: {
   cancellationCode: string | undefined;
@@ -584,9 +730,16 @@ function ReservationsView({
   detailState: ReservationDetailState;
   error: string;
   onConfirmCancellation: () => void;
+  onInitiatePayment: () => void;
   onKeepReservation: () => void;
   onRequestCancellation: (code: string) => void;
+  onVerifyPayment: () => void;
   onViewDetails: (code: string) => void;
+  paymentError: string;
+  paymentInitSubmitting: boolean;
+  paymentSuccess: string;
+  paymentTxnId: string | undefined;
+  paymentVerifySubmitting: boolean;
   state: ReservationsState;
 }) {
   return (
@@ -604,6 +757,13 @@ function ReservationsView({
         <ReservationDetail
           code={detailCode}
           error={detailError}
+          onInitiatePayment={onInitiatePayment}
+          onVerifyPayment={onVerifyPayment}
+          paymentError={paymentError}
+          paymentInitSubmitting={paymentInitSubmitting}
+          paymentSuccess={paymentSuccess}
+          paymentTxnId={paymentTxnId}
+          paymentVerifySubmitting={paymentVerifySubmitting}
           reservation={detail}
           state={detailState}
         />
@@ -652,11 +812,25 @@ function ReservationsView({
 function ReservationDetail({
   code,
   error,
+  onInitiatePayment,
+  onVerifyPayment,
+  paymentError,
+  paymentInitSubmitting,
+  paymentSuccess,
+  paymentTxnId,
+  paymentVerifySubmitting,
   reservation,
   state,
 }: {
   code: string;
   error: string;
+  onInitiatePayment: () => void;
+  onVerifyPayment: () => void;
+  paymentError: string;
+  paymentInitSubmitting: boolean;
+  paymentSuccess: string;
+  paymentTxnId: string | undefined;
+  paymentVerifySubmitting: boolean;
   reservation: Reservation | undefined;
   state: ReservationDetailState;
 }) {
@@ -680,70 +854,120 @@ function ReservationDetail({
         </p>
       )}
       {state === "success" && reservation && (
-        <dl className="reservation-detail-list">
-          <div>
-            <dt>Reservation code</dt>
-            <dd>{reservation.reservationCode}</dd>
-          </div>
-          <div>
-            <dt>Facility ID</dt>
-            <dd>{reservation.facilityId}</dd>
-          </div>
-          {reservation.slotId !== null && (
+        <>
+          <dl className="reservation-detail-list">
             <div>
-              <dt>Slot ID</dt>
-              <dd>{reservation.slotId}</dd>
+              <dt>Reservation code</dt>
+              <dd>{reservation.reservationCode}</dd>
             </div>
-          )}
-          <div>
-            <dt>Status</dt>
-            <dd>{bookingStatusLabel(reservation.state)}</dd>
-          </div>
-          <div>
-            <dt>Start time</dt>
-            <dd>
-              <time dateTime={reservation.startsAt}>{formatTimestamp(reservation.startsAt)}</time>
-            </dd>
-          </div>
-          <div>
-            <dt>End time</dt>
-            <dd>
-              <time dateTime={reservation.endsAt}>{formatTimestamp(reservation.endsAt)}</time>
-            </dd>
-          </div>
-          <div>
-            <dt>Created</dt>
-            <dd>
-              <time dateTime={reservation.createdAt}>{formatTimestamp(reservation.createdAt)}</time>
-            </dd>
-          </div>
-          {reservation.confirmedAt && (
             <div>
-              <dt>Confirmed</dt>
+              <dt>Facility ID</dt>
+              <dd>{reservation.facilityId}</dd>
+            </div>
+            {reservation.slotId !== null && (
+              <div>
+                <dt>Slot ID</dt>
+                <dd>{reservation.slotId}</dd>
+              </div>
+            )}
+            <div>
+              <dt>Status</dt>
+              <dd>{bookingStatusLabel(reservation.state)}</dd>
+            </div>
+            {reservation.amount !== null && (
+              <div>
+                <dt>Amount</dt>
+                <dd>{formatCurrency(reservation.amount)}</dd>
+              </div>
+            )}
+            {reservation.paymentStatus !== null && (
+              <div>
+                <dt>Payment status</dt>
+                <dd>{statusLabel(reservation.paymentStatus)}</dd>
+              </div>
+            )}
+            <div>
+              <dt>Start time</dt>
               <dd>
-                <time dateTime={reservation.confirmedAt}>
-                  {formatTimestamp(reservation.confirmedAt)}
+                <time dateTime={reservation.startsAt}>{formatTimestamp(reservation.startsAt)}</time>
+              </dd>
+            </div>
+            <div>
+              <dt>End time</dt>
+              <dd>
+                <time dateTime={reservation.endsAt}>{formatTimestamp(reservation.endsAt)}</time>
+              </dd>
+            </div>
+            <div>
+              <dt>Created</dt>
+              <dd>
+                <time dateTime={reservation.createdAt}>
+                  {formatTimestamp(reservation.createdAt)}
                 </time>
               </dd>
             </div>
-          )}
-          {reservation.cancelledAt && (
-            <div>
-              <dt>Cancelled</dt>
-              <dd>
-                <time dateTime={reservation.cancelledAt}>
-                  {formatTimestamp(reservation.cancelledAt)}
-                </time>
-              </dd>
+            {reservation.confirmedAt && (
+              <div>
+                <dt>Confirmed</dt>
+                <dd>
+                  <time dateTime={reservation.confirmedAt}>
+                    {formatTimestamp(reservation.confirmedAt)}
+                  </time>
+                </dd>
+              </div>
+            )}
+            {reservation.cancelledAt && (
+              <div>
+                <dt>Cancelled</dt>
+                <dd>
+                  <time dateTime={reservation.cancelledAt}>
+                    {formatTimestamp(reservation.cancelledAt)}
+                  </time>
+                </dd>
+              </div>
+            )}
+            {reservation.cancelReason && (
+              <div>
+                <dt>Cancellation reason</dt>
+                <dd>{reservation.cancelReason}</dd>
+              </div>
+            )}
+          </dl>
+          {reservation.state === "PENDING_PAYMENT" && (
+            <div className="payment-actions" aria-live="polite">
+              <p>Pay the pending amount to confirm this reservation.</p>
+              {!paymentTxnId ? (
+                <button disabled={paymentInitSubmitting} onClick={onInitiatePayment} type="button">
+                  {paymentInitSubmitting ? "Initiating payment..." : "Pay"}
+                </button>
+              ) : (
+                <>
+                  <p>
+                    <strong>Transaction ID:</strong> {paymentTxnId}
+                  </p>
+                  <p>Verify the payment to confirm this reservation.</p>
+                  <button
+                    disabled={paymentVerifySubmitting}
+                    onClick={onVerifyPayment}
+                    type="button"
+                  >
+                    {paymentVerifySubmitting ? "Verifying payment..." : "Verify Payment"}
+                  </button>
+                </>
+              )}
             </div>
           )}
-          {reservation.cancelReason && (
-            <div>
-              <dt>Cancellation reason</dt>
-              <dd>{reservation.cancelReason}</dd>
-            </div>
+          {paymentError && (
+            <p className="notice error" role="alert">
+              {paymentError}
+            </p>
           )}
-        </dl>
+          {paymentSuccess && (
+            <p className="notice success" role="status">
+              {paymentSuccess}
+            </p>
+          )}
+        </>
       )}
     </section>
   );

@@ -47,13 +47,14 @@ describe("GET /health", () => {
       headers: {
         Origin: "http://localhost:5173",
         "Access-Control-Request-Method": "GET",
-        "Access-Control-Request-Headers": "authorization,content-type",
+        "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
       },
     });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-origin")).toBe("http://localhost:5173");
     expect(preflight.headers.get("access-control-allow-credentials")).toBe("true");
     expect(preflight.headers.get("access-control-allow-headers")).toContain("Authorization");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("Idempotency-Key");
   });
 
   it("does not allow an unconfigured origin", async () => {

@@ -11,12 +11,14 @@
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "pg";
-import type {
-  AuthResponse,
-  BookingListResponse,
-  BookingResponse,
-  ParkingFacility,
-  ParkingSlot,
+import {
+  PAYMENT_STATUSES,
+  RESERVATION_STATES,
+  type AuthResponse,
+  type BookingListResponse,
+  type BookingResponse,
+  type ParkingFacility,
+  type ParkingSlot,
 } from "@smartpark/shared";
 import { createApp } from "../src/app.js";
 import { getPool, closeDb } from "../src/db.js";
@@ -223,15 +225,18 @@ describe("DB schema (Phase 2C migration 0005)", () => {
     }
   });
 
-  it("restricts reservation state to the Phase 2C non-payment subset", async () => {
+  it("restricts reservation state to the documented lifecycle vocabulary", async () => {
     const { rows } = await getPool().query<{ consrc: string }>(
       `SELECT pg_get_constraintdef(oid) AS consrc FROM pg_constraint
        WHERE conname = 'reservations_state_check'`,
     );
+    expect(rows[0]!.consrc).toContain("PENDING_PAYMENT");
     expect(rows[0]!.consrc).toContain("CONFIRMED");
     expect(rows[0]!.consrc).toContain("CANCELLED");
     expect(rows[0]!.consrc).toContain("COMPLETED");
-    expect(rows[0]!.consrc).not.toContain("PENDING_PAYMENT");
+    expect(rows[0]!.consrc).toContain("ACTIVE");
+    expect(rows[0]!.consrc).toContain("EXPIRED");
+    expect(rows[0]!.consrc).toContain("FAILED");
   });
 
   it("installs the exclusion-constraint double-booking guard", async () => {
@@ -333,15 +338,18 @@ describe("POST /api/v1/reservations — creation", () => {
     expect(res.status).toBe(400);
   });
 
-  it("201 valid booking → CONFIRMED", async () => {
+  it("201 valid booking → PENDING_PAYMENT with amount + INITIATED payment status", async () => {
     const res = await createBooking(userA.accessToken, WINDOW(facility.id, slots[1]!.id));
     expect(res.status).toBe(201);
     const booking = (res.body as BookingResponse).reservation;
-    expect(booking.state).toBe("CONFIRMED");
+    expect(booking.state).toBe("PENDING_PAYMENT");
     expect(booking.userId).toBe(userA.user.id);
     expect(booking.facilityId).toBe(facility.id);
     expect(booking.slotId).toBe(slots[1]!.id);
     expect(booking.reservationCode).toMatch(/^BKG-/);
+    expect(booking.amount).toBe(200);
+    expect(booking.paymentStatus).toBe("INITIATED");
+    expect(booking.confirmedAt).toBeNull();
   });
 
   it("409 overlapping booking on the same slot", async () => {
@@ -426,6 +434,167 @@ describe("GET /api/v1/reservations — own list + detail (IDOR)", () => {
     const res = await jsonGet(`/api/v1/reservations/${code}`, userB.accessToken);
     expect(res.status).toBe(404);
     expect(errorCode(res.body)).toBe("BOOKING_NOT_FOUND");
+  });
+});
+
+describe("Phase 7 regression — complete reservation response shape + lifecycle (bug: 'reservations response was incomplete or malformed')", () => {
+  let user: AuthResponse;
+  let operator: AuthResponse;
+  let facility: ParkingFacility;
+  let slot: ParkingSlot;
+  let dayOffset = 14; // WINDOW maps 10+offset → Sept day; stay valid (≤ day 28)
+
+  /**
+   * Mirrors the FRONTEND validator's requirements (frontend/src/api/reservations.ts)
+   * against the COMPLETE 16-field response contract shared by every reservations
+   * endpoint. A stale @smartpark/shared build or a partial DTO here must fail.
+   */
+  function expectReservationShape(r: unknown): void {
+    expect(r).toBeDefined();
+    expect(r).toBeTypeOf("object");
+    const reservation = r as Record<string, unknown>;
+    expect(reservation.id).toBeTypeOf("number");
+    expect(reservation.reservationCode).toBeTypeOf("string");
+    expect(reservation.userId).toBeTypeOf("number");
+    expect(reservation.facilityId).toBeTypeOf("number");
+    expect(reservation.zoneId === null || typeof reservation.zoneId === "number").toBe(true);
+    expect(reservation.slotId).toBeTypeOf("number");
+    expect(reservation.startsAt).toBeTypeOf("string");
+    expect(reservation.endsAt).toBeTypeOf("string");
+    expect(RESERVATION_STATES).toContain(reservation.state);
+    expect(
+      reservation.amount === null ||
+        (typeof reservation.amount === "number" && Number.isFinite(reservation.amount)),
+    ).toBe(true);
+    expect(
+      reservation.paymentStatus === null ||
+        (typeof reservation.paymentStatus === "string" &&
+          PAYMENT_STATUSES.includes(reservation.paymentStatus)),
+    ).toBe(true);
+    expect(reservation.cancelReason === null || typeof reservation.cancelReason === "string").toBe(
+      true,
+    );
+    expect(reservation.cancelledAt === null || typeof reservation.cancelledAt === "string").toBe(
+      true,
+    );
+    expect(reservation.confirmedAt === null || typeof reservation.confirmedAt === "string").toBe(
+      true,
+    );
+    expect(reservation.createdAt).toBeTypeOf("string");
+    expect(reservation.updatedAt).toBeTypeOf("string");
+  }
+
+  beforeAll(async () => {
+    user = await registerSession("shape-user");
+    operator = await registerOperatorSession("shape-op");
+    facility = await createFacility(operator.accessToken);
+    slot = await createSlot(operator.accessToken, facility.id);
+  });
+
+  async function createPending(): Promise<BookingResponse["reservation"]> {
+    const res = await createBooking(user.accessToken, WINDOW(facility.id, slot.id, dayOffset++));
+    expect(res.status).toBe(201);
+    const reservation = (res.body as BookingResponse).reservation;
+    expectReservationShape(reservation);
+    return reservation;
+  }
+
+  async function payToConfirmed(code: string): Promise<void> {
+    const initiated = await jsonPost(
+      "/api/v1/payments/initiate",
+      { reservationCode: code },
+      user.accessToken,
+    );
+    expect(initiated.status).toBe(200);
+    const providerTxnId = (initiated.body as { payment: { providerTxnId: string } }).payment
+      .providerTxnId;
+    const verified = await jsonPost(
+      `/api/v1/payments/${encodeURIComponent(providerTxnId)}/verify`,
+      {},
+      user.accessToken,
+    );
+    expect(verified.status).toBe(200);
+    const verifiedReservation = (verified.body as { reservation: BookingResponse["reservation"] })
+      .reservation;
+    expectReservationShape(verifiedReservation);
+    expect(verifiedReservation.state).toBe("CONFIRMED");
+    expect(verifiedReservation.paymentStatus).toBe("SUCCESS");
+  }
+
+  it("POST /api/v1/reservations returns the complete 16-field reservation DTO", async () => {
+    const reservation = await createPending();
+    expect(reservation.state).toBe("PENDING_PAYMENT");
+    expect(reservation.amount).toBeGreaterThan(0);
+    expect(reservation.paymentStatus).toBe("INITIATED");
+    expect(reservation.confirmedAt).toBeNull();
+  });
+
+  it("GET /api/v1/reservations returns every reservation as a complete 16-field DTO", async () => {
+    for (let i = 0; i < 2; i += 1) await createPending();
+    const res = await jsonGet("/api/v1/reservations", user.accessToken);
+    expect(res.status).toBe(200);
+    const list = res.body as BookingListResponse;
+    expect(list.reservations.length).toBeGreaterThan(0);
+    for (const r of list.reservations) {
+      expectReservationShape(r);
+      expect(r.state).toBe("PENDING_PAYMENT");
+      expect(r.amount).toBeGreaterThan(0);
+      expect(r.paymentStatus).toBe("INITIATED");
+    }
+  });
+
+  it("every response stays a complete, valid DTO across the full lifecycle (create → list → detail → initiate → verify → re-fetch)", async () => {
+    const reservation = await createPending();
+    const code = reservation.reservationCode;
+
+    const listed = await jsonGet("/api/v1/reservations", user.accessToken);
+    expect(listed.status).toBe(200);
+    const row = (listed.body as BookingListResponse).reservations.find(
+      (r) => r.reservationCode === code,
+    );
+    expect(row).toBeDefined();
+    expectReservationShape(row!);
+
+    const detailRes = await jsonGet(`/api/v1/reservations/${code}`, user.accessToken);
+    expect(detailRes.status).toBe(200);
+    const detail = (detailRes.body as BookingResponse).reservation;
+    expectReservationShape(detail);
+    expect(detail.state).toBe("PENDING_PAYMENT");
+
+    await payToConfirmed(code);
+
+    const afterDetail = await jsonGet(`/api/v1/reservations/${code}`, user.accessToken);
+    expect(afterDetail.status).toBe(200);
+    const after = (afterDetail.body as BookingResponse).reservation;
+    expectReservationShape(after);
+    expect(after.state).toBe("CONFIRMED");
+    expect(after.paymentStatus).toBe("SUCCESS");
+    expect(after.confirmedAt).toBeTypeOf("string");
+
+    const afterList = await jsonGet("/api/v1/reservations", user.accessToken);
+    const afterRow = (afterList.body as BookingListResponse).reservations.find(
+      (r) => r.reservationCode === code,
+    );
+    expectReservationShape(afterRow!);
+    expect(afterRow!.state).toBe("CONFIRMED");
+    expect(afterRow!.paymentStatus).toBe("SUCCESS");
+  });
+
+  it("legacy pre-payment rows (amount/payment_status NULL) still surface as complete, valid DTOs with nulls (not 'malformed')", async () => {
+    await getPool().query(
+      `INSERT INTO reservations (reservation_code, user_id, facility_id, slot_id, starts_at, ends_at, state, amount, payment_status, cancel_reason, cancelled_at, confirmed_at)
+       VALUES ('BKG-LEGACYNULL', $1, $2, $3, '2026-08-01T08:00:00Z', '2026-08-01T10:00:00Z', 'CANCELLED', NULL, NULL, 'no-show', '2026-08-01T12:00:00Z', '2026-08-01T08:00:00Z')`,
+      [user.user.id, facility.id, slot.id],
+    );
+    const res = await jsonGet("/api/v1/reservations", user.accessToken);
+    expect(res.status).toBe(200);
+    const legacy = (res.body as BookingListResponse).reservations.find(
+      (r) => r.reservationCode === "BKG-LEGACYNULL",
+    );
+    expect(legacy).toBeDefined();
+    expectReservationShape(legacy!);
+    expect(legacy!.amount).toBeNull();
+    expect(legacy!.paymentStatus).toBeNull();
   });
 });
 
@@ -687,7 +856,7 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
       `SELECT state FROM reservations WHERE reservation_code = $1`,
       [code],
     );
-    expect(rows[0]!.state).toBe("CONFIRMED");
+    expect(rows[0]!.state).toBe("PENDING_PAYMENT");
   });
 
   it("404 for a code that does not belong to any of the operator's facilities", async () => {

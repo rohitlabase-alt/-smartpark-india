@@ -6,6 +6,7 @@ import { operatorsRouter } from "./modules/operators/operators.routes.js";
 import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
 import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
+import { buildPaymentsRouter } from "./modules/payments/payments.routes.js";
 import { errorHandler, notFoundHandler } from "./http/error-handler.js";
 import { config } from "./config.js";
 
@@ -42,7 +43,10 @@ function corsMiddleware(allowedOrigins: string[]) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Accept, Content-Type, Authorization, Idempotency-Key",
+    );
     if (req.method === "OPTIONS") {
       res.status(204).end();
       return;
@@ -99,8 +103,11 @@ export function createApp(options: CreateAppOptions = {}): Express {
   // Public parking availability (Phase 2B): /parking/:id/availability
   app.use("/api/v1/parking", parkingRouter);
 
-  // Reservations / bookings (Phase 2C): /reservations (auth required)
+  // Reservations / bookings (Phase 2C/7): /reservations (auth required)
   app.use("/api/v1/reservations", reservationsRouter);
+
+  // Payments (Phase 7 mock payment): /payments (auth required)
+  app.use("/api/v1/payments", buildPaymentsRouter());
 
   // JSON 404 for unknown routes.
   app.use(notFoundHandler);

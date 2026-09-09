@@ -1,4 +1,5 @@
 import {
+  PAYMENT_STATUSES,
   RESERVATION_STATES,
   type BookingListResponse,
   type BookingResponse,
@@ -7,7 +8,7 @@ import {
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 
-function isReservation(value: unknown): value is Reservation {
+export function isReservation(value: unknown): value is Reservation {
   if (!value || typeof value !== "object") return false;
   const reservation = value as Partial<Reservation>;
   return (
@@ -25,6 +26,13 @@ function isReservation(value: unknown): value is Reservation {
     typeof reservation.endsAt === "string" &&
     typeof reservation.state === "string" &&
     RESERVATION_STATES.includes(reservation.state as Reservation["state"]) &&
+    (reservation.amount === null ||
+      (typeof reservation.amount === "number" && Number.isFinite(reservation.amount))) &&
+    (reservation.paymentStatus === null ||
+      (typeof reservation.paymentStatus === "string" &&
+        PAYMENT_STATUSES.includes(
+          reservation.paymentStatus as Exclude<Reservation["paymentStatus"], null>,
+        ))) &&
     (reservation.cancelReason === null || typeof reservation.cancelReason === "string") &&
     (reservation.cancelledAt === null || typeof reservation.cancelledAt === "string") &&
     (reservation.confirmedAt === null || typeof reservation.confirmedAt === "string") &&

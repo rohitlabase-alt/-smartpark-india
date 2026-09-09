@@ -37,6 +37,8 @@ const reservation = {
   startsAt: "2026-09-10T08:00:00.000Z",
   endsAt: "2026-09-10T10:00:00.000Z",
   state: "CONFIRMED" as const,
+  amount: 200,
+  paymentStatus: "SUCCESS" as const,
   cancelReason: null,
   cancelledAt: null,
   confirmedAt: "2026-09-01T10:05:00.000Z",
@@ -54,6 +56,36 @@ const cancelledReservation = {
 const completedReservation = {
   ...reservation,
   state: "COMPLETED" as const,
+};
+
+const pendingReservation = {
+  id: 13,
+  reservationCode: "BKG-PENDING987",
+  userId: user.id,
+  facilityId: 4,
+  zoneId: null,
+  slotId: 10,
+  startsAt: "2026-09-12T08:00:00.000Z",
+  endsAt: "2026-09-12T10:00:00.000Z",
+  state: "PENDING_PAYMENT" as const,
+  amount: 200,
+  paymentStatus: "INITIATED" as const,
+  cancelReason: null,
+  cancelledAt: null,
+  confirmedAt: null,
+  createdAt: "2026-09-02T10:05:00.000Z",
+  updatedAt: "2026-09-02T10:05:00.000Z",
+};
+
+const initiatedPayment = {
+  id: 1,
+  reservationId: 13,
+  provider: "MOCK" as const,
+  providerTxnId: "MOCK-BKG-PENDING987-200",
+  amount: 200,
+  status: "PENDING" as const,
+  createdAt: "2026-09-02T10:05:30.000Z",
+  updatedAt: "2026-09-02T10:05:30.000Z",
 };
 
 const authoritativeReservation = {
@@ -855,5 +887,211 @@ describe("My Reservations screen", () => {
 
     expect(container.textContent).not.toContain("My Reservations");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a Pay button, amount and payment status for a PENDING_PAYMENT reservation", async () => {
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+    );
+    await clickButton("View Details");
+    await settleAsyncWork();
+
+    const detail = container.querySelector<HTMLElement>(".reservation-detail");
+    expect(detail?.textContent).toContain("PENDING PAYMENT");
+    expect(detail?.textContent).toContain("Amount");
+    expect(detail?.textContent).toContain("₹200.00");
+    expect(detail?.textContent).toContain("INITIATED");
+    expect(container.querySelector(".payment-actions")).not.toBeNull();
+    const payButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Pay",
+    );
+    expect(payButton).toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("initiates payment with a retained Idempotency-Key and shows the transaction id", async () => {
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
+      );
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+
+    const initiateCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/payments/"));
+    expect(initiateCall).toBeDefined();
+    const options = initiateCall![1];
+    expect(options).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ reservationCode: "BKG-PENDING987" }),
+      headers: { Authorization: "Bearer access-token" },
+    });
+    const idempotencyKey = (options!.headers as Record<string, string>)["Idempotency-Key"];
+    expect(idempotencyKey).toBeTruthy();
+    expect(container.textContent).toContain("Transaction ID:");
+    expect(container.textContent).toContain("MOCK-BKG-PENDING987-200");
+    expect(container.textContent).toContain("Verify Payment");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("reuses the retained Idempotency-Key across retries of the same initiation", async () => {
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
+      );
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+
+    const initiateCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/payments/"),
+    );
+    expect(initiateCalls).toHaveLength(2);
+    const firstKey = (initiateCalls[0]![1]!.headers as Record<string, string>)["Idempotency-Key"];
+    const secondKey = (initiateCalls[1]![1]!.headers as Record<string, string>)["Idempotency-Key"];
+    expect(firstKey).toBeTruthy();
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it("prevents duplicate payment initiation while a request is in flight", async () => {
+    let resolveInitiate!: (value: Response) => void;
+    const initiateRequest = new Promise<Response>((resolve) => {
+      resolveInitiate = resolve;
+    });
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockReturnValueOnce(initiateRequest);
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+
+    expect(container.textContent).toContain("Initiating payment...");
+    const payingButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Initiating payment..."),
+    );
+    expect(payingButton?.disabled).toBe(true);
+    act(() => payingButton?.click());
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    resolveInitiate(new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }));
+    await settleAsyncWork();
+  });
+
+  it("verifies the payment and updates the reservation to CONFIRMED", async () => {
+    const confirmedReservation = {
+      ...pendingReservation,
+      state: "CONFIRMED" as const,
+      paymentStatus: "SUCCESS" as const,
+      confirmedAt: "2026-09-02T10:06:00.000Z",
+      updatedAt: "2026-09-02T10:06:00.000Z",
+    };
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            payment: { ...initiatedPayment, status: "SUCCESS" },
+            reservation: confirmedReservation,
+          }),
+          { status: 200 },
+        ),
+      );
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+    await clickButton("Verify Payment");
+    await settleAsyncWork();
+
+    const verifyCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/verify"));
+    expect(verifyCall).toBeDefined();
+    expect(String(verifyCall![0])).toContain("/payments/MOCK-BKG-PENDING987-200/verify");
+    expect(verifyCall![1]).toMatchObject({ method: "POST" });
+
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("confirmed");
+    const detail = container.querySelector<HTMLElement>(".reservation-detail");
+    expect(detail?.textContent).toContain("CONFIRMED");
+    expect(detail?.textContent).toContain("SUCCESS");
+    expect(container.querySelector(".payment-actions")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("shows a friendly inline error when payment initiation fails", async () => {
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { code: "PAYMENT_NOT_PENDING", message: "Backend error" } }),
+          { status: 409 },
+        ),
+      );
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "no longer waiting for payment",
+    );
+    expect(container.textContent).toContain("Pay");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not show the Pay button for an already-confirmed reservation", async () => {
+    const fetchMock = await renderReservationList([reservation]);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ reservation }), { status: 200 }));
+    await clickButton("View Details");
+    await settleAsyncWork();
+
+    expect(container.querySelector(".payment-actions")).toBeNull();
+    const payButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent === "Pay",
+    );
+    expect(payButton).toBeUndefined();
+  });
+
+  it("never exposes a transaction-id input or the __FAIL__ escape hatch in the UI", async () => {
+    const fetchMock = await renderReservationList([pendingReservation]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
+      );
+    await clickButton("View Details");
+    await settleAsyncWork();
+    await clickButton("Pay");
+    await settleAsyncWork();
+
+    expect(container.querySelector(".payment-actions input")).toBeNull();
+    expect(container.textContent).not.toContain("__FAIL__");
+    expect(container.textContent).toContain("MOCK-BKG-PENDING987-200");
   });
 });

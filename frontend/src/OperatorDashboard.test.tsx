@@ -89,6 +89,8 @@ const reservation: Reservation = {
   startsAt: "2026-09-10T08:00:00.000Z",
   endsAt: "2026-09-10T10:00:00.000Z",
   state: "CONFIRMED",
+  amount: 200,
+  paymentStatus: "SUCCESS",
   cancelReason: null,
   cancelledAt: null,
   confirmedAt: "2026-09-01T10:05:00.000Z",

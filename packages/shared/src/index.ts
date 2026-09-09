@@ -314,15 +314,41 @@ export interface UpdateSlotRequest {
 // ---------------------------------------------------------------------------
 
 /**
- * Reservation lifecycle (docs/DATABASE.md §2.12). Phase 2C implements only the
- * non-payment subset CONFIRMED/CANCELLED/COMPLETED; the payment/gate states
- * (PENDING_PAYMENT/ACTIVE/EXPIRED/FAILED) land with the payment/token phases.
+ * Reservation lifecycle (docs/DATABASE.md §2.12, docs/PRD.md §10). Phase 7
+ * activates the payment states (PENDING_PAYMENT/ACTIVE/EXPIRED/FAILED) alongside
+ * the earlier CONFIRMED/CANCELLED/COMPLETED subset (Phase 2C, D-034).
  */
-export const RESERVATION_STATES = ["CONFIRMED", "CANCELLED", "COMPLETED"] as const;
+export const RESERVATION_STATES = [
+  "PENDING_PAYMENT",
+  "CONFIRMED",
+  "ACTIVE",
+  "COMPLETED",
+  "CANCELLED",
+  "EXPIRED",
+  "FAILED",
+] as const;
 export type ReservationState = (typeof RESERVATION_STATES)[number];
 
-/** Product-facing alias for a reservation's state (Phase 2C). */
+/** Product-facing alias for a reservation's state. */
 export type BookingStatus = ReservationState;
+
+/**
+ * Payment lifecycle statuses (docs/DATABASE.md §2.15, docs/DECISIONS.md D-010).
+ */
+export const PAYMENT_STATUSES = ["INITIATED", "PENDING", "SUCCESS", "FAILED", "REFUNDED"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+/** Payment providers (docs/ROADMAP.md PHASE 7 — mock only in V1). */
+export const PAYMENT_PROVIDERS = ["MOCK"] as const;
+export type PaymentProviderCode = (typeof PAYMENT_PROVIDERS)[number];
+
+/** Ledger transaction kinds (docs/DATABASE.md §2.16). */
+export const PAYMENT_TRANSACTION_KINDS = ["CHARGE", "REFUND", "REVERSAL"] as const;
+export type PaymentTransactionKind = (typeof PAYMENT_TRANSACTION_KINDS)[number];
+
+/** Ledger transaction statuses (docs/DATABASE.md §2.16 capturable semantics). */
+export const PAYMENT_TRANSACTION_STATUSES = ["SUCCESS", "FAILED"] as const;
+export type PaymentTransactionStatus = (typeof PAYMENT_TRANSACTION_STATUSES)[number];
 
 export interface Reservation {
   id: number;
@@ -334,6 +360,8 @@ export interface Reservation {
   startsAt: string;
   endsAt: string;
   state: ReservationState;
+  amount: number | null;
+  paymentStatus: PaymentStatus | null;
   cancelReason: string | null;
   cancelledAt: string | null;
   confirmedAt: string | null;
@@ -354,4 +382,33 @@ export interface BookingResponse {
 
 export interface BookingListResponse {
   reservations: Reservation[];
+}
+
+// ---------------------------------------------------------------------------
+// Payments (docs/DATABASE.md §2.15/§2.16, docs/API_SPEC.md §2 payments)
+// ---------------------------------------------------------------------------
+
+export interface Payment {
+  id: number;
+  reservationId: number;
+  provider: PaymentProviderCode;
+  providerTxnId: string | null;
+  amount: number;
+  status: PaymentStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Initiate a mock payment for a PENDING_PAYMENT reservation (API_SPEC §2). */
+export interface InitiatePaymentRequest {
+  reservationCode: string;
+}
+
+export interface InitiatePaymentResponse {
+  payment: Payment;
+}
+
+export interface VerifyPaymentResponse {
+  payment: Payment;
+  reservation: Reservation;
 }

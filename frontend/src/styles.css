@@ -331,6 +331,9 @@ input {
   color: var(--brand-dark);
   background: var(--soft-brand);
 }
+.payment-actions {
+  margin-top: 1.25rem;
+}
 .reservation-list {
   display: grid;
   gap: 1rem;

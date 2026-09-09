@@ -29,6 +29,7 @@ export interface FacilityRow {
   availabilityMode: AvailabilityMode;
   isActive: boolean;
   isDemo: boolean;
+  pricing: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -52,6 +53,7 @@ interface FacilityResult {
   availability_mode: string;
   is_active: boolean;
   is_demo: boolean;
+  pricing: unknown;
   created_at: Date;
   updated_at: Date;
 }
@@ -76,6 +78,7 @@ function mapFacility(row: FacilityResult): FacilityRow {
     availabilityMode: row.availability_mode as AvailabilityMode,
     isActive: row.is_active,
     isDemo: row.is_demo,
+    pricing: row.pricing,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -109,7 +112,7 @@ export function toFacilityDto(row: FacilityRow): ParkingFacility {
 const SELECT_COLUMNS = `
   id, parking_id, name, description, type, country, state, city, area, address,
   latitude, longitude, operator_id, capacity, verification_status,
-  availability_mode, is_active, is_demo, created_at, updated_at`;
+  availability_mode, is_active, is_demo, pricing, created_at, updated_at`;
 
 export const facilitiesRepository = {
   async create(input: {

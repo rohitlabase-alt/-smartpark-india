@@ -322,7 +322,7 @@ interface ObjectStorageProvider {
 }
 ```
 
-The DB stores `storage_key` + metadata, never the object bytes (`docs/DATABASE.md` §2.23).
+The DB stores `storage_key` + metadata, never the object bytes (`docs/DATABASE.md` §2.24).
 
 ### 12.3 Upload flow (small-file, app-mediated in V1)
 
@@ -365,7 +365,7 @@ Optionally, for large files later: `getSignedPutUrl` used by the client and an a
 
 ### 12.8 Audit logging
 
-- Upload, verify, reject, download(signed URL issuance), and delete events are recorded in `audit_logs` (append-only) with actor/timestamp/entity (`docs/DATABASE.md` §2.22).
+- Upload, verify, reject, download(signed URL issuance), and delete events are recorded in `audit_logs` (append-only) with actor/timestamp/entity (`docs/DATABASE.md` §2.23).
 - Signed URL issuance is logged (rate-limited) to detect abuse.
 
 ### 12.9 Cost & scale notes

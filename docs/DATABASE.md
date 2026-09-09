@@ -15,7 +15,7 @@ Conventions:
 
 > DECISION (recorded in DECISIONS.md): monetary values stored as `NUMERIC(12,2)` in INR in V1 for readability, with a code-level helper to avoid float drift. Revisit to integer paise if rounding disputes arise.
 
-**Implementation status (Phase 2B):** `parking_zones` (§2.7), `parking_slots` (§2.8) and `availability_state` (§2.20) are implemented by migration `0004_phase2b_availability_foundation.sql`. These tables use the **authoritative** vocabulary below — `parking_slots.status` is the six-state list, `availability_state.status` the four-state engine list. The Phase 2B brief's four-state slot list differs and is **superseded** by the documented §2.8 vocabulary. `availability_state` is written only with `source=MANUAL` in Phase 2B; the `RESERVATION / IOT / API` source values are permitted by the constraint so later phases can write without a schema migration. See `DECISIONS.md` D-033.
+**Implementation status (Phase 2B):** `parking_zones` (§2.7), `parking_slots` (§2.8) and `availability_state` (§2.21) are implemented by migration `0004_phase2b_availability_foundation.sql`. These tables use the **authoritative** vocabulary below — `parking_slots.status` is the six-state list, `availability_state.status` the four-state engine list. The Phase 2B brief's four-state slot list differs and is **superseded** by the documented §2.8 vocabulary. `availability_state` is written only with `source=MANUAL` in Phase 2B; the `RESERVATION / IOT / API` source values are permitted by the constraint so later phases can write without a schema migration. See `DECISIONS.md` D-033.
 
 ---
 
@@ -227,9 +227,9 @@ A "category" booking (e.g., "any 4-wheeler slot") is modeled by grouping slots; 
 | cancelled_at | TIMESTAMPTZ NULL | |
 | confirmed_at | TIMESTAMPTZ NULL | |
 
-Constraint: no overlapping CONFIRMED/ACTIVE reservations on the same slot → enforce via **exclusion constraint** (btree_gist) on `slot_id, [starts_at, ends_at)` `WHERE state IN ('CONFIRMED','ACTIVE')`. This is the primary double-booking guard.
+Constraint: no overlapping PENDING_PAYMENT/CONFIRMED/ACTIVE reservations on the same slot → enforced via **exclusion constraint** (btree_gist) on `slot_id, [starts_at, ends_at)` `WHERE state IN ('PENDING_PAYMENT','CONFIRMED','ACTIVE')`. This is the primary double-booking guard (migration `0006`).
 
-> **Phase 2C implementation (migration `0005`, D-034):** the table is created with the columns above **minus `vehicle_id`** (no `vehicles` table exists yet) and **minus** `amount`/`payment_status` inputs (present but unused in Phase 2C). The `state` CHECK is constrained to the non-payment subset `('CONFIRMED','CANCELLED','COMPLETED')`; payment/gate states (`PENDING_PAYMENT`/`ACTIVE`/`EXPIRED`/`FAILED`) and `amount`/`payment_status` become active with the payments phase. A created booking is immediately `CONFIRMED` (no payment step) with `confirmed_at` set. The live exclusion constraint currently covers `WHERE state = 'CONFIRMED'`; `'ACTIVE'` is added to the predicate when ACTIVE bookings land.
+> **Phase 7 implementation (migrations `0005` + `0006`):** the table is created (migration `0005`, D-034) with the columns above **minus `vehicle_id`** (no `vehicles` table exists yet). Migration `0006` (Phase 7, D-035) activates the payment fields: the `state` CHECK now covers the full vocabulary `('PENDING_PAYMENT','CONFIRMED','ACTIVE','COMPLETED','CANCELLED','EXPIRED','FAILED')` (creates with `PENDING_PAYMENT`, transitions to `CONFIRMED` on a successful mock payment verification, `FAILED` on a failed verification), and `amount` (nullable, `reservations_amount_check`) is populated from the facility pricing JSONB (`hourlyRate`, default ₹100/hr) at creation while `payment_status` tracks the payment outcome. The **live exclusion constraint** is widened to `WHERE state IN ('PENDING_PAYMENT','CONFIRMED','ACTIVE')` so a pending (unpaid) reservation still holds its slot; failed/cancelled/completed reservations release it.
 
 ### 2.13 parking_sessions
 
@@ -264,26 +264,43 @@ Constraint: no overlapping CONFIRMED/ACTIVE reservations on the same slot → en
 | column | type | notes |
 |---|---|---|
 | id | BIGSERIAL PK | |
-| reservation_id FK | | |
-| provider | VARCHAR(32) | mock |
-| provider_txn_id | VARCHAR(80) UNIQUE NULL | |
+| reservation_id FK | | RESTRICT |
+| provider | VARCHAR(32) | `'MOCK'` in Phase 7 (`payments_provider_check`) |
+| provider_txn_id | VARCHAR(80) UNIQUE NULL | deterministic `MOCK-<code>-<amount>`; partial unique index |
 | amount | NUMERIC(12,2) | INR |
 | status | VARCHAR(24) | INITIATED/PENDING/SUCCESS/FAILED/REFUNDED |
 | meta | JSONB NULL | provider payload (never card details) |
 | created_at / updated_at | | |
+
+> **Phase 7 implementation (migration `0006`, D-035):** created by `POST /payments/initiate` with `status='PENDING'`; the reservation's stored `amount` is the charge amount. `POST /payments/{txnId}/verify` drives `status` to `SUCCESS` (reservation → CONFIRMED + one `CHARGE`) or `FAILED` (reservation → FAILED + one `CHARGE`/`FAILED`); `REFUNDED` is reserved for the deferred refund workflow (no refunds in the mock, D-035).
 
 ### 2.16 transactions
 
 | column | type | notes |
 |---|---|---|
 | id | BIGSERIAL PK | |
-| payment_id FK | | |
-| kind | VARCHAR(24) | charge/refund/reversal |
+| payment_id FK | | RESTRICT |
+| kind | VARCHAR(24) | CHARGE/REFUND/REVERSAL |
 | amount | NUMERIC(12,2) | |
-| status | VARCHAR(24) | capturable ledger semantics |
-| reference | VARCHAR(80) NULL | |
+| status | VARCHAR(24) | SUCCESS/FAILED |
+| reference | VARCHAR(80) NULL | prior transaction id for reversals |
 
-### 2.17 iot_devices
+> **Phase 7 implementation (migration `0006`):** written inside the verify transaction — exactly one `CHARGE` per verified payment (`SUCCESS` when the payment succeeds, `FAILED` when it fails). `REFUND`/`REVERSAL` kinds are permitted by the constraint for the future refund workflow but not yet written.
+
+### 2.17 payment_idempotency_keys
+
+| column | type | notes |
+|---|---|---|
+| id | BIGSERIAL PK | |
+| user_id FK | | RESTRICT |
+| key | VARCHAR(128) | caller-provided `Idempotency-Key` |
+| endpoint | VARCHAR(64) | `payments/initiate` |
+| payment_id FK | | CASCADE |
+| expires_at | TIMESTAMPTZ | 15 min TTL |
+
+> **Phase 7 implementation (migration `0006`):** claim + payment creation happen atomically inside the initiate transaction; unique index `(user_id, key, endpoint)` guarantees a repeated initiate with the same key reuses the existing payment rather than creating a duplicate attempt.
+
+### 2.18 iot_devices
 
 | column | type | notes |
 |---|---|---|
@@ -299,7 +316,7 @@ Constraint: no overlapping CONFIRMED/ACTIVE reservations on the same slot → en
 | firmware_version | VARCHAR(32) NULL | |
 | registered_at | TIMESTAMPTZ | |
 
-### 2.18 iot_readings
+### 2.19 iot_readings
 
 | column | type | notes |
 |---|---|---|
@@ -312,7 +329,7 @@ Constraint: no overlapping CONFIRMED/ACTIVE reservations on the same slot → en
 
 Indexes: `(device_id, received_at DESC)`.
 
-### 2.19 api_integrations
+### 2.20 api_integrations
 
 | column | type | notes |
 |---|---|---|
@@ -326,7 +343,7 @@ Indexes: `(device_id, received_at DESC)`.
 | last_sync_at | TIMESTAMPTZ NULL | |
 | last_sync_status | VARCHAR(24) NULL | |
 
-### 2.20 availability_state (engine output cache)
+### 2.21 availability_state (engine output cache)
 
 | column | type | notes |
 |---|---|---|
@@ -341,7 +358,7 @@ Indexes: `(device_id, received_at DESC)`.
 
 This table is the normalized output the API/WS actually serves.
 
-### 2.21 notifications
+### 2.22 notifications
 
 | column | type | notes |
 |---|---|---|
@@ -353,7 +370,7 @@ This table is the normalized output the API/WS actually serves.
 | status | VARCHAR(16) | queued/sent/failed |
 | sent_at | TIMESTAMPTZ NULL | |
 
-### 2.22 audit_logs
+### 2.23 audit_logs
 
 | column | type | notes |
 |---|---|---|
@@ -367,7 +384,7 @@ This table is the normalized output the API/WS actually serves.
 | user_agent | TEXT NULL | |
 | created_at | TIMESTAMPTZ | append-only (no UPDATE/DELETE grants) |
 
-### 2.23 documents
+### 2.24 documents
 
 Operator verification documents and parking images. Stores **metadata + reference only**; the binary lives in S3-compatible object storage abstraction, not PostgreSQL (see `ARCHITECTURE.md` §12).
 
@@ -409,7 +426,7 @@ Lifecycle:
 
 ## 3. Integrity & Concurrency
 
-- **Double-booking guard:** btree_gist exclusion constraint on reservations (slot_id, overlap) restricted to CONFIRMED/ACTIVE states. Reserve flow uses a transaction: `SELECT ... FOR UPDATE` on slot + insert reservation + update availability.
+- **Double-booking guard:** btree_gist exclusion constraint on reservations (slot_id, overlap) restricted to PENDING_PAYMENT/CONFIRMED/ACTIVE states (migration `0006`). Reserve flow uses a transaction: `SELECT ... FOR UPDATE` on slot + insert reservation + update availability.
 - **Money:** `NUMERIC(12,2)` INR; integer paise decision deferred (see top).
 - **Soft delete** on users, facilities, slots, operators.
 - **FKs** everywhere; `ON DELETE RESTRICT` for financial/history rows.

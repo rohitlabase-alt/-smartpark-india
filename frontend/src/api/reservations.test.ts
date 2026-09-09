@@ -31,6 +31,8 @@ const bookingResponse: BookingListResponse = {
       startsAt: "2026-09-10T08:00:00.000Z",
       endsAt: "2026-09-10T10:00:00.000Z",
       state: "CONFIRMED",
+      amount: 200,
+      paymentStatus: "SUCCESS",
       cancelReason: null,
       cancelledAt: null,
       confirmedAt: "2026-09-01T10:05:00.000Z",
@@ -47,6 +49,47 @@ const createInput = {
   startsAt: "2026-09-10T08:00:00.000Z",
   endsAt: "2026-09-10T10:00:00.000Z",
 };
+
+const pendingReservation: BookingResponse["reservation"] = {
+  id: 13,
+  reservationCode: "BKG-PENDING987",
+  userId: user.id,
+  facilityId: 4,
+  zoneId: null,
+  slotId: 10,
+  startsAt: "2026-09-12T08:00:00.000Z",
+  endsAt: "2026-09-12T10:00:00.000Z",
+  state: "PENDING_PAYMENT",
+  amount: 200,
+  paymentStatus: "INITIATED",
+  cancelReason: null,
+  cancelledAt: null,
+  confirmedAt: null,
+  createdAt: "2026-09-02T10:05:00.000Z",
+  updatedAt: "2026-09-02T10:05:00.000Z",
+};
+
+const legacyCancelledReservation: BookingResponse["reservation"] = {
+  id: 14,
+  reservationCode: "BKG-LEGACY",
+  userId: user.id,
+  facilityId: 4,
+  zoneId: null,
+  slotId: 11,
+  startsAt: "2026-08-01T08:00:00.000Z",
+  endsAt: "2026-08-01T10:00:00.000Z",
+  state: "CANCELLED",
+  amount: null,
+  paymentStatus: null,
+  cancelReason: "no-show",
+  cancelledAt: "2026-08-01T12:00:00.000Z",
+  confirmedAt: "2026-08-01T08:00:00.000Z",
+  createdAt: "2026-08-01T07:55:00.000Z",
+  updatedAt: "2026-08-01T12:00:00.000Z",
+};
+
+const pendingListResponse: BookingListResponse = { reservations: [pendingReservation] };
+const pendingCreateResponse: BookingResponse = { reservation: pendingReservation };
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -276,6 +319,79 @@ describe("reservations API client", () => {
       new Response(JSON.stringify({ reservations: [{ reservationCode: "BKG-INCOMPLETE" }] }), {
         status: 200,
       }),
+    );
+
+    await expect(fetchReservations("access-token")).rejects.toThrow("incomplete or malformed");
+  });
+
+  it("accepts a PENDING_PAYMENT reservation with amount + paymentStatus (regression: stale shared vocab used to reject this state)", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(pendingListResponse), { status: 200 }));
+
+    await expect(fetchReservations("access-token")).resolves.toEqual(pendingListResponse);
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("accepts create + detail responses for a PENDING_PAYMENT reservation", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(pendingCreateResponse), { status: 201 }),
+    );
+    await expect(createReservation("access-token", createInput)).resolves.toEqual(
+      pendingCreateResponse,
+    );
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(pendingCreateResponse), { status: 200 }),
+    );
+    await expect(getReservation("access-token", "BKG-PENDING987")).resolves.toEqual(
+      pendingCreateResponse,
+    );
+  });
+
+  it.each([
+    ["amount", { amount: undefined }],
+    ["paymentStatus", { paymentStatus: undefined }],
+    ["paymentStatus membership", { paymentStatus: "MAYBE" }],
+  ])("rejects a reservation missing a valid %s", async (_label, missing) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          reservations: [{ ...pendingReservation, ...missing }],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(fetchReservations("access-token")).rejects.toThrow("incomplete or malformed");
+  });
+
+  it("accepts a legacy pre-payment reservation whose amount/paymentStatus are null (contract allows null; only missing is malformed)", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ reservations: [pendingReservation, legacyCancelledReservation] }),
+          { status: 200 },
+        ),
+      );
+
+    const result = await fetchReservations("access-token");
+    expect(result.reservations).toHaveLength(2);
+    expect(result.reservations[1]!.state).toBe("CANCELLED");
+    expect(result.reservations[1]!.amount).toBeNull();
+    expect(result.reservations[1]!.paymentStatus).toBeNull();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("rejects a reservation whose state is not in the current runtime vocabulary even with amount/paymentStatus present", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          reservations: [{ ...pendingReservation, state: "SOMETHING_NEW" }],
+        }),
+        { status: 200 },
+      ),
     );
 
     await expect(fetchReservations("access-token")).rejects.toThrow("incomplete or malformed");
