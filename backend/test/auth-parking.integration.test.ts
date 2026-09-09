@@ -130,6 +130,39 @@ async function registerOperatorSession(label: string): Promise<AuthResponse> {
   return session;
 }
 
+async function registerAdminSession(label: string): Promise<AuthResponse> {
+  const session = await registerSession(label);
+  await getPool().query(
+    `INSERT INTO user_roles (user_id, role_id)
+     SELECT u.id, r.id FROM users u JOIN roles r ON r.code = 'ADMIN'
+     WHERE u.email = $1
+     ON CONFLICT (user_id, role_id) DO NOTHING`,
+    [session.user.email],
+  );
+  return session;
+}
+
+/** Registers an operator (PENDING) and moves it through review to VERIFIED. */
+async function registerVerifiedOperatorSession(label: string): Promise<AuthResponse> {
+  const session = await registerOperatorSession(label);
+  const me = await jsonGet("/api/v1/operators/me", session.accessToken);
+  const operator = me.body as Operator;
+  const admin = await registerAdminSession(`${label}-admin`);
+  const review = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/review`,
+    {},
+    admin.accessToken,
+  );
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/approve`,
+    {},
+    admin.accessToken,
+  );
+  expect(approve.status).toBe(200);
+  return session;
+}
+
 async function createFacility(token: string, overrides: Record<string, unknown> = {}) {
   const { status, body } = await jsonPost(
     "/api/v1/operators/me/facilities",
@@ -461,7 +494,7 @@ describe("Operator registration + RBAC", () => {
 
 describe("Parking facility CRUD (owned by the operator)", () => {
   it("creates a facility with a generated parking id and PENDING verification", async () => {
-    const session = await registerOperatorSession("fac-create");
+    const session = await registerVerifiedOperatorSession("fac-create");
 
     const facility: ParkingFacility = await createFacility(session.accessToken);
     expect(facility.parkingId).toMatch(/^PUN-\d{6}$/);
@@ -474,7 +507,7 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("lists own facilities", async () => {
-    const session = await registerOperatorSession("fac-list");
+    const session = await registerVerifiedOperatorSession("fac-list");
     await createFacility(session.accessToken, { name: "Alpha Lot" });
     await createFacility(session.accessToken, { name: "Beta Lot" });
 
@@ -484,7 +517,7 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("400 VALIDATION_ERROR for invalid facility input", async () => {
-    const session = await registerOperatorSession("fac-invalid");
+    const session = await registerVerifiedOperatorSession("fac-invalid");
     const missingCity = await jsonPost(
       "/api/v1/operators/me/facilities",
       { name: "X", type: "public", capacity: 5 },
@@ -508,7 +541,7 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("operator can patch own facility (incl. activation toggle)", async () => {
-    const session = await registerOperatorSession("fac-patch");
+    const session = await registerVerifiedOperatorSession("fac-patch");
     const facility = await createFacility(session.accessToken, { capacity: 40 });
 
     const patch = await jsonPatch(
@@ -530,7 +563,7 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("400 VALIDATION_ERROR for unknown keys or bad values on PATCH", async () => {
-    const session = await registerOperatorSession("fac-patch-bad");
+    const session = await registerVerifiedOperatorSession("fac-patch-bad");
     const facility = await createFacility(session.accessToken);
 
     const unknownKey = await jsonPatch(
@@ -549,7 +582,7 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("404 for missing / non-numeric facility ids", async () => {
-    const session = await registerOperatorSession("fac-missing");
+    const session = await registerVerifiedOperatorSession("fac-missing");
     const missing = await jsonPatch(
       "/api/v1/operators/me/facilities/999999",
       { isActive: false },
@@ -566,8 +599,8 @@ describe("Parking facility CRUD (owned by the operator)", () => {
   });
 
   it("403 FORBIDDEN when patching another operator's facility (ownership)", async () => {
-    const owner = await registerOperatorSession("fac-owner");
-    const intruder = await registerOperatorSession("fac-intruder");
+    const owner = await registerVerifiedOperatorSession("fac-owner");
+    const intruder = await registerVerifiedOperatorSession("fac-intruder");
 
     const facility = await createFacility(owner.accessToken);
     await createFacility(intruder.accessToken);
@@ -587,7 +620,7 @@ describe("documents FK integrity (0003 wiring)", () => {
   let session: AuthResponse;
 
   beforeAll(async () => {
-    session = await registerOperatorSession("fac-doc");
+    session = await registerVerifiedOperatorSession("fac-doc");
     facility = await createFacility(session.accessToken);
   });
 

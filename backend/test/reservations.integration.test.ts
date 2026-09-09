@@ -17,6 +17,7 @@ import {
   type AuthResponse,
   type BookingListResponse,
   type BookingResponse,
+  type Operator,
   type ParkingFacility,
   type ParkingSlot,
 } from "@smartpark/shared";
@@ -126,6 +127,39 @@ async function registerOperatorSession(label: string): Promise<AuthResponse> {
     session.accessToken,
   );
   expect(status).toBe(201);
+  return session;
+}
+
+async function registerAdminSession(label: string): Promise<AuthResponse> {
+  const session = await registerSession(label);
+  await getPool().query(
+    `INSERT INTO user_roles (user_id, role_id)
+     SELECT u.id, r.id FROM users u JOIN roles r ON r.code = 'ADMIN'
+     WHERE u.email = $1
+     ON CONFLICT (user_id, role_id) DO NOTHING`,
+    [session.user.email],
+  );
+  return session;
+}
+
+/** Registers an operator (PENDING) and moves it through review to VERIFIED. */
+async function registerVerifiedOperatorSession(label: string): Promise<AuthResponse> {
+  const session = await registerOperatorSession(label);
+  const me = await jsonGet("/api/v1/operators/me", session.accessToken);
+  const operator = me.body as Operator;
+  const admin = await registerAdminSession(`${label}-admin`);
+  const review = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/review`,
+    {},
+    admin.accessToken,
+  );
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/approve`,
+    {},
+    admin.accessToken,
+  );
+  expect(approve.status).toBe(200);
   return session;
 }
 
@@ -252,7 +286,9 @@ describe("DB schema (Phase 2C migration 0005)", () => {
       `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`,
       [`range-${Date.now()}@example.com`],
     );
-    const facility = await createFacility((await registerOperatorSession("range-op")).accessToken);
+    const facility = await createFacility(
+      (await registerVerifiedOperatorSession("range-op")).accessToken,
+    );
     await expect(
       getPool().query(
         `INSERT INTO reservations
@@ -272,7 +308,7 @@ describe("POST /api/v1/reservations — creation", () => {
   let slots: ParkingSlot[];
 
   beforeAll(async () => {
-    operator = await registerOperatorSession("bk-op");
+    operator = await registerVerifiedOperatorSession("bk-op");
     userA = await registerSession("bk-userA");
     facility = await createFacility(operator.accessToken);
     slots = [];
@@ -326,7 +362,7 @@ describe("POST /api/v1/reservations — creation", () => {
   });
 
   it("400 slot/facility mismatch", async () => {
-    const otherOp = await registerOperatorSession("mismatch-op");
+    const otherOp = await registerVerifiedOperatorSession("mismatch-op");
     const otherFacility = await createFacility(otherOp.accessToken);
     const otherSlot = await createSlot(otherOp.accessToken, otherFacility.id);
     const res = await createBooking(userA.accessToken, {
@@ -401,7 +437,7 @@ describe("GET /api/v1/reservations — own list + detail (IDOR)", () => {
   beforeAll(async () => {
     userA = await registerSession("list-userA");
     userB = await registerSession("list-userB");
-    operator = await registerOperatorSession("list-op");
+    operator = await registerVerifiedOperatorSession("list-op");
     facility = await createFacility(operator.accessToken);
     slot = await createSlot(operator.accessToken, facility.id);
     const created = await createBooking(userA.accessToken, WINDOW(facility.id, slot.id));
@@ -486,7 +522,7 @@ describe("Phase 7 regression — complete reservation response shape + lifecycle
 
   beforeAll(async () => {
     user = await registerSession("shape-user");
-    operator = await registerOperatorSession("shape-op");
+    operator = await registerVerifiedOperatorSession("shape-op");
     facility = await createFacility(operator.accessToken);
     slot = await createSlot(operator.accessToken, facility.id);
   });
@@ -609,10 +645,10 @@ describe("GET /api/v1/operators/me/reservations — operator scope", () => {
   let deletedCode: string;
 
   beforeAll(async () => {
-    operatorA = await registerOperatorSession("reservation-list-opA");
-    operatorB = await registerOperatorSession("reservation-list-opB");
+    operatorA = await registerVerifiedOperatorSession("reservation-list-opA");
+    operatorB = await registerVerifiedOperatorSession("reservation-list-opB");
     regularUser = await registerSession("reservation-list-user");
-    emptyOperator = await registerOperatorSession("reservation-list-empty");
+    emptyOperator = await registerVerifiedOperatorSession("reservation-list-empty");
     facilityA1 = await createFacility(operatorA.accessToken);
     facilityA2 = await createFacility(operatorA.accessToken);
     facilityB = await createFacility(operatorB.accessToken);
@@ -696,7 +732,7 @@ describe("POST /api/v1/reservations/:code/cancel", () => {
   beforeAll(async () => {
     userA = await registerSession("cancel-userA");
     userB = await registerSession("cancel-userB");
-    operator = await registerOperatorSession("cancel-op");
+    operator = await registerVerifiedOperatorSession("cancel-op");
     facility = await createFacility(operator.accessToken);
     slot = await createSlot(operator.accessToken, facility.id);
   });
@@ -758,8 +794,8 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
   let facilityB: ParkingFacility;
 
   beforeAll(async () => {
-    operatorA = await registerOperatorSession("op-cancel-A");
-    operatorB = await registerOperatorSession("op-cancel-B");
+    operatorA = await registerVerifiedOperatorSession("op-cancel-A");
+    operatorB = await registerVerifiedOperatorSession("op-cancel-B");
     regularUser = await registerSession("op-cancel-user");
     facilityA1 = await createFacility(operatorA.accessToken);
     facilityA2 = await createFacility(operatorA.accessToken);
@@ -915,7 +951,7 @@ describe("Concurrency / rollback safety", () => {
   it("two overlapping inserts cannot both succeed (exclusion constraint), and no partial row is left", async () => {
     const userA = await registerSession("conc-userA");
     const userB = await registerSession("conc-userB");
-    const operator = await registerOperatorSession("conc-op");
+    const operator = await registerVerifiedOperatorSession("conc-op");
     const facility = await createFacility(operator.accessToken);
     const slot = await createSlot(operator.accessToken, facility.id);
 

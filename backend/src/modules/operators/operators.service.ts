@@ -14,6 +14,7 @@ import { conflict, notFound, unprocessable } from "../../http/errors.js";
 import { assignRole } from "../auth/auth.repository.js";
 import { withTransaction } from "../../db.js";
 import { operatorsRepository, toOperatorDto } from "./operators.repository.js";
+import { assertVerifiedOperator } from "./operator-verification.js";
 import { reservationsRepository, toReservationDto } from "../bookings/reservations.repository.js";
 
 export const operatorsService = {
@@ -40,10 +41,7 @@ export const operatorsService = {
   },
 
   async listOperatorReservations(userId: number): Promise<BookingListResponse> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const rows = await reservationsRepository.listByOperator(operator.id);
     return { reservations: rows.map(toReservationDto) };
   },
@@ -60,10 +58,7 @@ export const operatorsService = {
     code: string,
     reason?: string,
   ): Promise<BookingResponse> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     return withTransaction(async (client) => {
       const existing = await reservationsRepository.findByCodeForOperator(
         code,

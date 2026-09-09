@@ -15,6 +15,7 @@ import type {
   AuthResponse,
   BookingResponse,
   InitiatePaymentResponse,
+  Operator,
   ParkingFacility,
   ParkingSlot,
   VerifyPaymentResponse,
@@ -85,6 +86,14 @@ async function jsonPost(
   return { status: res.status, body: text ? JSON.parse(text) : undefined };
 }
 
+async function jsonGet(path: string, token?: string): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  const text = await res.text();
+  return { status: res.status, body: text ? JSON.parse(text) : undefined };
+}
+
 async function registerSession(label: string): Promise<AuthResponse> {
   const { status, body } = await jsonPost("/api/v1/auth/register", {
     email: uniqueEmail(label),
@@ -102,6 +111,39 @@ async function registerOperatorSession(label: string): Promise<AuthResponse> {
     session.accessToken,
   );
   expect(status).toBe(201);
+  return session;
+}
+
+async function registerAdminSession(label: string): Promise<AuthResponse> {
+  const session = await registerSession(label);
+  await getPool().query(
+    `INSERT INTO user_roles (user_id, role_id)
+     SELECT u.id, r.id FROM users u JOIN roles r ON r.code = 'ADMIN'
+     WHERE u.email = $1
+     ON CONFLICT (user_id, role_id) DO NOTHING`,
+    [session.user.email],
+  );
+  return session;
+}
+
+/** Registers an operator (PENDING) and moves it through review to VERIFIED. */
+async function registerVerifiedOperatorSession(label: string): Promise<AuthResponse> {
+  const session = await registerOperatorSession(label);
+  const me = await jsonGet("/api/v1/operators/me", session.accessToken);
+  const operator = me.body as Operator;
+  const admin = await registerAdminSession(`${label}-admin`);
+  const review = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/review`,
+    {},
+    admin.accessToken,
+  );
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/approve`,
+    {},
+    admin.accessToken,
+  );
+  expect(approve.status).toBe(200);
   return session;
 }
 
@@ -261,7 +303,7 @@ describe("reservation creation for the payment lifecycle", () => {
 
   beforeAll(async () => {
     user = await registerSession("pay-user");
-    operator = await registerOperatorSession("pay-op");
+    operator = await registerVerifiedOperatorSession("pay-op");
     facility = await createFacility(operator.accessToken);
     slots = [];
     slots.push(await createSlot(operator.accessToken, facility.id, { slotCode: "P7-S1" }));
@@ -320,7 +362,7 @@ describe("POST /api/v1/payments/initiate", () => {
   beforeAll(async () => {
     userA = await registerSession("init-A");
     userB = await registerSession("init-B");
-    operator = await registerOperatorSession("init-op");
+    operator = await registerVerifiedOperatorSession("init-op");
     facility = await createFacility(operator.accessToken);
     slot = await createSlot(operator.accessToken, facility.id);
   });
@@ -425,7 +467,7 @@ describe("POST /api/v1/payments/:txnId/verify", () => {
   beforeAll(async () => {
     userA = await registerSession("verify-A");
     userB = await registerSession("verify-B");
-    operator = await registerOperatorSession("verify-op");
+    operator = await registerVerifiedOperatorSession("verify-op");
     facility = await createFacility(operator.accessToken);
     slot = await createSlot(operator.accessToken, facility.id);
   });

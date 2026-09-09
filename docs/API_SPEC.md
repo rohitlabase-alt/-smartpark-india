@@ -131,16 +131,19 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 ### admin
 | method | path | role | description |
 |---|---|---|---|
-| GET | /admin/operators | admin | operator list w/ status |
-| POST | /admin/operators/{id}/approve | verifier/admin | approve |
-| POST | /admin/operators/{id}/reject | admin | reject (reason) |
-| POST | /admin/operators/{id}/suspend | admin | suspend |
-| GET | /admin/facilities | admin | facility list |
-| POST | /admin/facilities/{id}/approve | verifier/admin | approve/verify |
-| GET | /admin/users | admin | user management |
-| PATCH | /admin/users/{id}/status | admin | suspend/activate |
-| GET | /admin/reservations | admin | monitor reservations |
-| GET | /admin/audit-logs | admin | audit log query (paginated/filter) |
+| GET | /admin/operators | admin | operator list (filter by `?status`, default `PENDING`) |
+| POST | /admin/operators/{id}/review | admin | START review (PENDING → UNDER_REVIEW) |
+| POST | /admin/operators/{id}/approve | admin | approve (UNDER_REVIEW → VERIFIED) |
+| POST | /admin/operators/{id}/reject | admin | reject (UNDER_REVIEW → REJECTED) |
+| POST | /admin/operators/{id}/suspend | admin | suspend *(deferred — no VERIFIED→SUSPENDED yet)* |
+| GET | /admin/facilities | admin | facility list *(deferred)* |
+| POST | /admin/facilities/{id}/approve | verifier/admin | approve/verify *(deferred)* |
+| GET | /admin/users | admin | user management *(deferred)* |
+| PATCH | /admin/users/{id}/status | admin | suspend/activate *(deferred)* |
+| GET | /admin/reservations | admin | monitor reservations *(deferred)* |
+| GET | /admin/audit-logs | admin | audit log query *(deferred)* |
+
+> **Implementation status (Phase 8, Part 1 — operator verification):** the four `admin` operator endpoints are **implemented** (mounted at `/api/v1/admin`, authenticated **and** `ADMIN` role enforced server-side via `requireAuth` + `requireRole("ADMIN")`). The workflow is strict and sequential — `GET /admin/operators?status=` lists by the shared `OPERATOR_STATUSES` vocabulary (invalid filter → `400 VALIDATION_ERROR`); `POST /{id}/review` moves `PENDING → UNDER_REVIEW`; `POST /{id}/approve` records the admin as `approved_by` with `approved_at` only from `UNDER_REVIEW → VERIFIED`; `POST /{id}/reject` moves `UNDER_REVIEW → REJECTED`. Any transition from the wrong source state → `409 OPERATOR_STATUS_CONFLICT`; unknown/non-numeric ids → `404 OPERATOR_NOT_FOUND`; non-admin sessions → `403 FORBIDDEN`. Verification gating: only `VERIFIED` operators may create/list/update facilities, create/list/update slots, or use `GET /operators/me/reservations` / cancel via the operator flow (PENDING/UNDER_REVIEW/REJECTED → `403 OPERATOR_NOT_VERIFIED`); registration and `GET /operators/me` stay open. Review does **not** record a reviewer identity and reject does **not** persist a reason (schema has only `approved_by`/`approved_at` — see `DECISIONS.md` D-036).
 
 ### documents
 Metadata lives in the DB; binary lives in private S3-compatible object storage. **Private storage is never exposed directly** — clients get metadata via API and short-lived signed URLs only (`ARCHITECTURE.md` §12).

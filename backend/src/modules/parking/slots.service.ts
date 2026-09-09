@@ -10,7 +10,7 @@ import type {
   UpdateSlotRequest,
 } from "@smartpark/shared";
 import { forbidden, notFound } from "../../http/errors.js";
-import { operatorsRepository } from "../operators/operators.repository.js";
+import { assertVerifiedOperator } from "../operators/operator-verification.js";
 import { facilitiesRepository } from "./facilities.repository.js";
 import { slotsRepository, toSlotDto } from "./slots.repository.js";
 
@@ -38,10 +38,7 @@ export const slotsService = {
   },
 
   async updateSlot(userId: number, slotId: number, input: UpdateSlotRequest): Promise<ParkingSlot> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const slot = await slotsRepository.findById(slotId);
     if (!slot) {
       throw notFound("SLOT_NOT_FOUND", "Parking slot not found");
@@ -62,12 +59,9 @@ export const slotsService = {
     return toSlotDto(updated);
   },
 
-  /** Ensures the given facility exists and belongs to the caller's operator org. */
+  /** Ensures the caller's operator org is VERIFIED and owns the given facility. */
   async assertFacilityOwnership(userId: number, facilityId: number): Promise<void> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const facility = await facilitiesRepository.findById(facilityId);
     if (!facility) {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");

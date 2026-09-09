@@ -17,7 +17,7 @@ export interface OperatorRow {
   createdAt: string;
 }
 
-interface OperatorResult {
+export interface OperatorResult {
   id: string;
   name: string;
   business_type: string | null;
@@ -26,7 +26,7 @@ interface OperatorResult {
   created_at: Date;
 }
 
-function mapOperator(row: OperatorResult): OperatorRow {
+export function mapOperator(row: OperatorResult): OperatorRow {
   return {
     id: Number(row.id),
     name: row.name,

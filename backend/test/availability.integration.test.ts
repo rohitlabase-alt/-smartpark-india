@@ -133,6 +133,39 @@ async function registerOperatorSession(label: string): Promise<AuthResponse> {
   return session;
 }
 
+async function registerAdminSession(label: string): Promise<AuthResponse> {
+  const session = await registerSession(label);
+  await getPool().query(
+    `INSERT INTO user_roles (user_id, role_id)
+     SELECT u.id, r.id FROM users u JOIN roles r ON r.code = 'ADMIN'
+     WHERE u.email = $1
+     ON CONFLICT (user_id, role_id) DO NOTHING`,
+    [session.user.email],
+  );
+  return session;
+}
+
+/** Registers an operator (PENDING) and moves it through review to VERIFIED. */
+async function registerVerifiedOperatorSession(label: string): Promise<AuthResponse> {
+  const session = await registerOperatorSession(label);
+  const me = await jsonGet("/api/v1/operators/me", session.accessToken);
+  const operator = me.body as Operator;
+  const admin = await registerAdminSession(`${label}-admin`);
+  const review = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/review`,
+    {},
+    admin.accessToken,
+  );
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(
+    `/api/v1/admin/operators/${operator.id}/approve`,
+    {},
+    admin.accessToken,
+  );
+  expect(approve.status).toBe(200);
+  return session;
+}
+
 async function createFacility(token: string): Promise<ParkingFacility> {
   const { status, body } = await jsonPost(
     "/api/v1/operators/me/facilities",
@@ -197,7 +230,7 @@ describe("DB schema (Phase 2B migration 0004)", () => {
   });
 
   it("enforces the §2.8 slot status vocabulary", async () => {
-    const operator = await registerOperatorSession("s-vocab");
+    const operator = await registerVerifiedOperatorSession("s-vocab");
     const facility = await createFacility(operator.accessToken);
     await expect(
       getPool().query(
@@ -229,8 +262,8 @@ describe("Slot creation (PARKING_OPERATOR, authenticated)", () => {
   let otherFacility: ParkingFacility;
 
   beforeAll(async () => {
-    operator = await registerOperatorSession("slot-op");
-    other = await registerOperatorSession("slot-other");
+    operator = await registerVerifiedOperatorSession("slot-op");
+    other = await registerVerifiedOperatorSession("slot-other");
     facility = await createFacility(operator.accessToken);
     otherFacility = await createFacility(other.accessToken);
   });
@@ -327,7 +360,7 @@ describe("Slot creation (PARKING_OPERATOR, authenticated)", () => {
 
 describe("Slot listing (operator)", () => {
   it("lists only own facility's slots", async () => {
-    const operator = await registerOperatorSession("list-op");
+    const operator = await registerVerifiedOperatorSession("list-op");
     const facility = await createFacility(operator.accessToken);
     await createSlot(operator.accessToken, facility.id, { slotCode: "B01" });
     await createSlot(operator.accessToken, facility.id, { slotCode: "B02" });
@@ -340,8 +373,8 @@ describe("Slot listing (operator)", () => {
   });
 
   it("403 listing another operator's facility slots", async () => {
-    const a = await registerOperatorSession("list-a");
-    const b = await registerOperatorSession("list-b");
+    const a = await registerVerifiedOperatorSession("list-a");
+    const b = await registerVerifiedOperatorSession("list-b");
     const aFacility = await createFacility(a.accessToken);
     await createSlot(a.accessToken, aFacility.id, { slotCode: "C01" });
 
@@ -357,8 +390,8 @@ describe("Slot status update + manual availability engine sync", () => {
   let slot: ParkingSlot;
 
   beforeAll(async () => {
-    operator = await registerOperatorSession("upd-op");
-    intruder = await registerOperatorSession("upd-intruder");
+    operator = await registerVerifiedOperatorSession("upd-op");
+    intruder = await registerVerifiedOperatorSession("upd-intruder");
     facility = await createFacility(operator.accessToken);
     ({ body: slot } = await createSlot(operator.accessToken, facility.id, {
       slotCode: "D01",
@@ -450,7 +483,7 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   });
 
   it("serves correct totals and breakdown derived from slot engine state", async () => {
-    const operator = await registerOperatorSession("av-op");
+    const operator = await registerVerifiedOperatorSession("av-op");
     const facility = await createFacility(operator.accessToken);
 
     await createSlot(operator.accessToken, facility.id, { slotCode: "E01" }); // AVAILABLE
@@ -489,7 +522,7 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   });
 
   it("empty availability: no slots → all zeros, not live, LOW confidence, no sources", async () => {
-    const operator = await registerOperatorSession("av-empty");
+    const operator = await registerVerifiedOperatorSession("av-empty");
     const facility = await createFacility(operator.accessToken);
 
     const res = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
@@ -503,7 +536,7 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   });
 
   it("soft-deleted slots are excluded from the total", async () => {
-    const operator = await registerOperatorSession("av-deleted");
+    const operator = await registerVerifiedOperatorSession("av-deleted");
     const facility = await createFacility(operator.accessToken);
     await createSlot(operator.accessToken, facility.id, { slotCode: "F01" });
     const f02 = await createSlot(operator.accessToken, facility.id, { slotCode: "F02" });
@@ -529,7 +562,7 @@ describe("RBAC summary", () => {
     const adminUser = await registerSession("admin-check");
     // ADMIN is a documented role but not auto-assigned on register; a plain
     // user must NOT manage slots even though 'ADMIN' is a valid role code.
-    const operator = await registerOperatorSession("admin-op");
+    const operator = await registerVerifiedOperatorSession("admin-op");
     const facility = await createFacility(operator.accessToken);
     const res = await jsonPost(
       `${SLOTS_PATH(facility.id)}`,

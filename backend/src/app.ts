@@ -3,6 +3,7 @@ import { APP_NAME, APP_VERSION, HealthResponse } from "@smartpark/shared";
 import { checkDatabaseConnection } from "./db.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { operatorsRouter } from "./modules/operators/operators.routes.js";
+import { adminRouter } from "./modules/admin/admin.routes.js";
 import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
 import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
@@ -95,6 +96,9 @@ export function createApp(options: CreateAppOptions = {}): Express {
   // Versioned API namespace (docs/API_SPEC.md base path /api/v1).
   app.use("/api/v1/auth", authRouter);
   app.use("/api/v1/operators", operatorsRouter);
+
+  // Admin operator verification (Phase 8, Part 1): all routes require ADMIN.
+  app.use("/api/v1/admin", adminRouter);
 
   // Operator-owned slot management (Phase 2B): /operators/me/facilities/:id/slots
   const slotsRouter = buildSlotsRouter();

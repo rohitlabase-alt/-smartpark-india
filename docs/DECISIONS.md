@@ -192,10 +192,21 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 
 ---
 
+## D-036 — Phase 8 admin operator verification (strict review-first workflow; no schema change)
+
+- **Decision:** Add the **admin operator verification** workflow on top of the existing `operators` table (D-031) — **no migration**. A new `admin` module is mounted at `/api/v1/admin` and every route requires authenticated **`ADMIN`** (server-side `requireAuth` + `requireRole("ADMIN")`, never client role claims). The workflow is strict and sequential against the shared `OPERATOR_STATUSES`: `POST /{id}/review` moves `PENDING → UNDER_REVIEW`; `POST /{id}/approve` moves `UNDER_REVIEW → VERIFIED` and records `approved_by` (the acting admin's `user_id`) + `approved_at`; `POST /{id}/reject` moves `UNDER_REVIEW → REJECTED` and intentionally leaves `approved_by`/`approved_at` NULL. Any transition from the wrong source state → `409 OPERATOR_STATUS_CONFLICT`; unknown/non-numeric ids → `404 OPERATOR_NOT_FOUND` (no enumeration). `GET /operators?status=` filters by the vocabulary (default `PENDING`, oldest first).
+- **Operational gating:** a new `assertVerifiedOperator` (operators module) is applied to facility create/list/update (`facilities.service`), slot create/list/update (`slots.service` incl. `assertFacilityOwnership`), and operator reservations list/cancel (`operators.service`): a PENDING/UNDER_REVIEW/REJECTED operator gets `403 OPERATOR_NOT_VERIFIED` before any ownership/detail work. Registration and `GET /operators/me` stay open (a pending operator must still see/manage their own profile); facility verification, suspensions, users, audit logs and gate flows are untouched (deferred).
+- **Limits (schema gap, deliberately not migrated):** the `operators` table has only `approved_by`/`approved_at`. `review` therefore records **no reviewer identity**, and `reject` accepts **no reason** (there is no `reviewed_by` or `rejection_reason` column). Persisting those needs a `0007` schema migration in a later part.
+- **Rationale:** the strict sequential workflow (never a direct PENDING→VERIFIED shortcut) keeps the audit trail sound with the columns that exist; guarding transitions via a conditional `UPDATE ... WHERE verification_status = <from>` is race-safe; reusing `requireRole("ADMIN")` avoids a new role; `assertVerifiedOperator` centralizes the gate so every operational operator action enforces verification without per-route duplication; 404 for unknown ids preserves the no-enumeration rule.
+- **Status:** ACTIVE — verified end-to-end (new DB-backed `admin.integration.test.ts`, 22 tests; facility/slot/operator-reservation suites migrated to verified operators; all 156 api tests green).
+
+---
+
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
+| 2026-09-09 | D-036 | Added — Phase 8 admin operator verification (strict review-first workflow; approved_by/approved_at on approve; operational gating via assertVerifiedOperator) | Phase 8 (admin verification) | admin (new), operators, parking (facilities/slots), bookings, shared (no change) | none (no migration) |
 | 2026-09-06 | D-035 | Added — Phase 7 mock payment foundation (PENDING_PAYMENT lifecycle, JSONB hourlyRate pricing, no refunds in mock) | Phase 7 (payments) | bookings, payments, parking (pricing), shared | new tables (payments, transactions, payment_idempotency_keys) + reservations state CHECK/exclusion widen (0006) |
 | 2026-08-31 | D-033 | Added — slots + manual availability foundation (engine output cache, MANUAL source) | Phase 2B (availability) | parking (slots), availability | new tables (parking_zones, parking_slots, availability_state) |
 | 2026-08-30 | D-030 | Added — access/refresh session foundation (JWT HS256 + SHA-256 refresh, rotation/revocation) | Phase 2A (auth) | auth, refresh_tokens | new table (refresh_tokens) |

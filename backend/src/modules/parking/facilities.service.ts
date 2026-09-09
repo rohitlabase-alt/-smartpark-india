@@ -10,15 +10,12 @@ import type {
   UpdateFacilityRequest,
 } from "@smartpark/shared";
 import { forbidden, notFound } from "../../http/errors.js";
-import { operatorsRepository } from "../operators/operators.repository.js";
+import { assertVerifiedOperator } from "../operators/operator-verification.js";
 import { buildParkingId, facilitiesRepository, toFacilityDto } from "./facilities.repository.js";
 
 export const facilitiesService = {
   async createFacility(userId: number, input: CreateFacilityRequest): Promise<ParkingFacility> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const sequence = await facilitiesRepository.nextParkingSequence();
     const facility = await facilitiesRepository.create({
       parkingId: buildParkingId(input.city, sequence),
@@ -39,10 +36,7 @@ export const facilitiesService = {
   },
 
   async listFacilities(userId: number): Promise<ParkingFacility[]> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const facilities = await facilitiesRepository.listByOperator(operator.id);
     return facilities.map(toFacilityDto);
   },
@@ -52,10 +46,7 @@ export const facilitiesService = {
     facilityId: number,
     input: UpdateFacilityRequest,
   ): Promise<ParkingFacility> {
-    const operator = await operatorsRepository.findByOwnerUser(userId);
-    if (!operator) {
-      throw notFound("OPERATOR_NOT_FOUND", "No parking operator registered for this account");
-    }
+    const operator = await assertVerifiedOperator(userId);
     const facility = await facilitiesRepository.findById(facilityId);
     if (!facility) {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");

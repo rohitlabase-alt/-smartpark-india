@@ -67,6 +67,7 @@ Roles: `USER, GATE_STAFF, PARKING_OPERATOR, OPERATOR_MANAGER, VERIFIER, ADMIN`.
 - Middleware: `requireAuth`, `requireRole(...)`, `requireFacilityScope(facilityId)`.
 - Gate staff: read-only token verification + entry/exit + override(reason) — never facility mutation.
 - Multi-role users allowed; scope checked per route.
+- Admin operator verification (Phase 8): `/api/v1/admin/*` requires the `ADMIN` role server-side (`requireAuth` + `requireRole("ADMIN")`) — client role claims are never trusted. The workflow is strict (`PENDING → UNDER_REVIEW → VERIFIED|REJECTED`); any transition from the wrong source state → `409`, unknown ids → `404` (no enumeration). Only `VERIFIED` operators may create/manage facilities, slots, or use operator reservation operations (`403 OPERATOR_NOT_VERIFIED` otherwise); registration and `GET /operators/me` remain open.
 
 ## 4. Data & Input
 
@@ -79,6 +80,7 @@ Roles: `USER, GATE_STAFF, PARKING_OPERATOR, OPERATOR_MANAGER, VERIFIER, ADMIN`.
 
 - Request IDs, structured logs, no PII-in-excess (minimize: log identifiers only as needed).
 - `audit_logs` append-only; sensitive actions logged (approvals, overrides, role changes, refunds, suspensions).
+- Operator approve records the acting admin (`operators.approved_by` + `approved_at`). Known Phase 8 gap: `review` does not yet record the reviewer and `reject` does not yet persist a reason (`reviewed_by`/`rejection_reason` columns don't exist yet — see `DECISIONS.md` D-036).
 - No secrets in logs (redaction on serialize).
 
 ## 6. Secret Management
