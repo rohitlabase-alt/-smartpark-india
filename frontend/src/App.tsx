@@ -15,6 +15,7 @@ import {
   type Reservation,
   type RegisterRequest,
 } from "@smartpark/shared";
+import AdminDashboard from "./AdminDashboard";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import OperatorDashboard from "./OperatorDashboard";
 import OperatorRegistration from "./OperatorRegistration";
@@ -41,7 +42,13 @@ import {
 
 type ViewState = "initial" | "loading" | "success" | "error";
 type Screen =
-  "availability" | "login" | "register" | "reservations" | "operator" | "operator-registration";
+  | "admin"
+  | "availability"
+  | "login"
+  | "register"
+  | "reservations"
+  | "operator"
+  | "operator-registration";
 type SessionState = "loading" | "authenticated" | "unauthenticated";
 type ReservationsState = "initial" | "loading" | "success" | "error";
 type ReservationDetailState = "initial" | "loading" | "success" | "error";
@@ -324,6 +331,12 @@ export default function App() {
     setScreen("operator");
   }
 
+  function handleOpenAdminDashboard(): void {
+    if (sessionState !== "authenticated" || !session) return;
+    if (!session.user.roles.includes("ADMIN")) return;
+    setScreen("admin");
+  }
+
   async function handleOperatorRegistered(_operator: Operator): Promise<void> {
     if (!session) return;
     const user = await getCurrentUser(session.accessToken);
@@ -516,6 +529,15 @@ export default function App() {
                     Operator Dashboard
                   </button>
                 )}
+                {session.user.roles.includes("ADMIN") && (
+                  <button
+                    className={screen === "admin" ? "nav-button active" : "nav-button"}
+                    onClick={handleOpenAdminDashboard}
+                    type="button"
+                  >
+                    Admin Control Panel
+                  </button>
+                )}
                 {!session.user.roles.includes("PARKING_OPERATOR") && (
                   <button
                     className={
@@ -618,6 +640,11 @@ export default function App() {
             onOpenDashboard={handleOpenOperatorDashboard}
             onRegistered={handleOperatorRegistered}
           />
+        ) : screen === "admin" &&
+          sessionState === "authenticated" &&
+          session &&
+          session.user.roles.includes("ADMIN") ? (
+          <AdminDashboard accessToken={session.accessToken} />
         ) : (
           <>
             <section className="intro" aria-labelledby="page-title">
