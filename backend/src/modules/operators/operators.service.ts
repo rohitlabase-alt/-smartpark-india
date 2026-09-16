@@ -82,6 +82,9 @@ export const operatorsService = {
       if (existing.state === "COMPLETED") {
         throw unprocessable("CANNOT_CANCEL_COMPLETED", "Completed bookings cannot be cancelled");
       }
+      if (existing.state !== "PENDING_PAYMENT" && existing.state !== "CONFIRMED") {
+        throw conflict("CANNOT_CANCEL", "This booking cannot be cancelled in its current state");
+      }
       const updated = await reservationsRepository.updateState(client, existing.id, {
         state: "CANCELLED",
         cancelReason: reason?.trim() || null,

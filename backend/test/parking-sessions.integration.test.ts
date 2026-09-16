@@ -912,3 +912,301 @@ describe("GET /api/v1/operators/me/sessions", () => {
     expect(ids).not.toContain(session.id);
   });
 });
+
+describe("POST /api/v1/parking-sessions/:id/cancel — operator force-exit (Phase 9 Block 4.2)", () => {
+  let userA: AuthResponse;
+  let operatorA: AuthResponse;
+  let operatorB: AuthResponse;
+  let facilityA: ParkingFacility;
+  let dayOffset = 420;
+
+  beforeAll(async () => {
+    userA = await registerSession("forceexit-A");
+    operatorA = await registerVerifiedOperatorSession("forceexit-opA");
+    operatorB = await registerVerifiedOperatorSession("forceexit-opB");
+    facilityA = await createFacility(operatorA.accessToken);
+  });
+
+  function cancelEndpoint(sessionId: number): string {
+    return `/api/v1/parking-sessions/${sessionId}/cancel`;
+  }
+
+  async function forceCancel(
+    token: string,
+    sessionId: number,
+    reason?: string,
+  ): Promise<{ status: number; body: unknown }> {
+    return jsonPost(cancelEndpoint(sessionId), reason ? { reason } : {}, token);
+  }
+
+  /** Confirmed booking on a fresh slot in the given facility, then entered. */
+  async function freshActiveSession(
+    facility: ParkingFacility,
+    operator: AuthResponse,
+  ): Promise<{ session: ParkingSession; reservationCode: string; slotId: number }> {
+    const freshSlot = await createSlot(operator.accessToken, facility.id);
+    const confirmed = await createConfirmedReservation(userA, facility, freshSlot, dayOffset++);
+    const entry = await enterParking(userA.accessToken, confirmed.reservation.reservationCode);
+    expect(entry.status).toBe(201);
+    const session = sessionBody(entry.body);
+    return {
+      session,
+      reservationCode: confirmed.reservation.reservationCode,
+      slotId: freshSlot.id,
+    };
+  }
+
+  it("401 unauthenticated", async () => {
+    const res = await forceCancel("", 1);
+    expect(res.status).toBe(401);
+  });
+
+  it("403 FORBIDDEN for a plain user (owner path excluded by design)", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const res = await forceCancel(userA.accessToken, session.id, "driver cancels");
+    expect(res.status).toBe(403);
+    expect(errorCode(res.body)).toBe("FORBIDDEN");
+  });
+
+  it("403 OPERATOR_NOT_VERIFIED for a pending operator", async () => {
+    const pending = await registerOperatorSession("forceexit-pending");
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const res = await forceCancel(pending.accessToken, session.id);
+    expect(res.status).toBe(403);
+    expect(errorCode(res.body)).toBe("OPERATOR_NOT_VERIFIED");
+  });
+
+  it("404 for a nonexistent session id", async () => {
+    const res = await forceCancel(operatorA.accessToken, 999_999_999);
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+  });
+
+  it("404 non-numeric session id (no existence disclosure)", async () => {
+    const res = await jsonPost("/api/v1/parking-sessions/nope/cancel", {}, operatorA.accessToken);
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+  });
+
+  it("404 for an operator of another facility; session/slot/reservation unchanged", async () => {
+    const { session, slotId } = await freshActiveSession(facilityA, operatorA);
+    const res = await forceCancel(operatorB.accessToken, session.id, "not my facility");
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+
+    const { rows } = await getPool().query<{
+      session_status: string;
+      slot_status: string;
+      reservation_state: string;
+    }>(
+      `SELECT ps.status AS session_status, sl.status AS slot_status, r.state AS reservation_state
+       FROM parking_sessions ps
+       JOIN parking_slots sl ON sl.id = ps.slot_id
+       JOIN reservations r ON r.id = ps.reservation_id
+       WHERE ps.id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.session_status).toBe("ACTIVE");
+    expect(rows[0]!.slot_status).toBe("OCCUPIED");
+    expect(rows[0]!.reservation_state).toBe("ACTIVE");
+    expect(slotId).toBe(session.slotId);
+  });
+
+  it("success: session CANCELLED, slot AVAILABLE, reservation CANCELLED, audit written", async () => {
+    const { session, reservationCode } = await freshActiveSession(facilityA, operatorA);
+
+    const res = await forceCancel(operatorA.accessToken, session.id, "venue closed early");
+    expect(res.status).toBe(200);
+    const body = res.body as ParkingSessionResponse;
+    expect(body.session.id).toBe(session.id);
+    expect(body.session.status).toBe("CANCELLED");
+    expect(body.session.exitAt).toBeTruthy();
+
+    const { rows } = await getPool().query<{
+      session_status: string;
+      exit_at: string | null;
+      slot_status: string;
+      reservation_state: string;
+      cancel_reason: string | null;
+      cancelled_at: string | null;
+    }>(
+      `SELECT ps.status AS session_status, ps.exit_at::text AS exit_at,
+              sl.status AS slot_status, r.state AS reservation_state,
+              r.cancel_reason AS cancel_reason, r.cancelled_at::text AS cancelled_at
+       FROM parking_sessions ps
+       JOIN parking_slots sl ON sl.id = ps.slot_id
+       JOIN reservations r ON r.id = ps.reservation_id
+       WHERE ps.id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.session_status).toBe("CANCELLED");
+    expect(rows[0]!.exit_at).toBeTruthy();
+    expect(rows[0]!.slot_status).toBe("AVAILABLE");
+    expect(rows[0]!.reservation_state).toBe("CANCELLED");
+    expect(rows[0]!.cancel_reason).toBe("venue closed early");
+    expect(rows[0]!.cancelled_at).toBeTruthy();
+
+    const availability = await getPool().query<{ status: string }>(
+      `SELECT status FROM availability_state WHERE slot_id = $1`,
+      [session.slotId],
+    );
+    expect(availability.rows[0]!.status).toBe("AVAILABLE");
+
+    const audit = await getPool().query<{
+      action: string;
+      entity_type: string;
+      entity_id: string;
+      metadata: Record<string, unknown>;
+    }>(
+      `SELECT action, entity_type, entity_id, metadata::jsonb AS metadata FROM audit_events
+       WHERE entity_type = 'PARKING_SESSION' AND entity_id = $1 AND action = 'PARKING_SESSION_CANCELLED'`,
+      [session.id],
+    );
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0]!.entity_id).toBe(String(session.id));
+    expect(audit.rows[0]!.metadata.facilityId).toBe(session.facilityId);
+    expect(audit.rows[0]!.metadata.slotId).toBe(session.slotId);
+    expect(audit.rows[0]!.metadata.reservationId).toBe(session.reservationId);
+    expect(audit.rows[0]!.metadata.cancelledBy).toBe("OPERATOR");
+    expect(audit.rows[0]!.metadata.reason).toBe("venue closed early");
+    expect(JSON.stringify(audit.rows[0]!.metadata)).not.toContain(reservationCode);
+  });
+
+  it("stores null cancel_reason when no reason is supplied", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const res = await forceCancel(operatorA.accessToken, session.id);
+    expect(res.status).toBe(200);
+    const { rows } = await getPool().query<{ cancel_reason: string | null }>(
+      `SELECT r.cancel_reason FROM reservations r
+       JOIN parking_sessions ps ON ps.reservation_id = r.id
+       WHERE ps.id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.cancel_reason).toBeNull();
+  });
+
+  it("400 invalid body (unknown keys rejected)", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const res = await jsonPost(
+      cancelEndpoint(session.id),
+      { facilityId: facilityA.id },
+      operatorA.accessToken,
+    );
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_ERROR");
+  });
+
+  it("repeated force-cancel → 409 SESSION_NOT_ACTIVE without changing state", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    expect((await forceCancel(operatorA.accessToken, session.id, "first")).status).toBe(200);
+    const again = await forceCancel(operatorA.accessToken, session.id, "second");
+    expect(again.status).toBe(409);
+    expect(errorCode(again.body)).toBe("SESSION_NOT_ACTIVE");
+
+    const { rows } = await getPool().query<{ status: string; cancel_reason: string | null }>(
+      `SELECT ps.status, r.cancel_reason FROM parking_sessions ps
+       JOIN reservations r ON r.id = ps.reservation_id WHERE ps.id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.status).toBe("CANCELLED");
+    expect(rows[0]!.cancel_reason).toBe("first");
+    const audit = await getPool().query<{ action: string }>(
+      `SELECT action FROM audit_events
+       WHERE action = 'PARKING_SESSION_CANCELLED' AND entity_id = $1`,
+      [session.id],
+    );
+    expect(audit.rows).toHaveLength(1);
+  });
+
+  it("already COMPLETED session → 409 SESSION_NOT_ACTIVE", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const exited = await exitParking(operatorA.accessToken, session.id);
+    expect(exited.status).toBe(200);
+
+    const res = await forceCancel(operatorA.accessToken, session.id);
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_ACTIVE");
+    const { rows } = await getPool().query<{ status: string }>(
+      `SELECT status FROM parking_sessions WHERE id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.status).toBe("COMPLETED");
+  });
+
+  it("concurrent normal EXIT vs force-cancel → exactly one wins, state stays consistent", async () => {
+    const { session, slotId } = await freshActiveSession(facilityA, operatorA);
+    const [exit, cancel] = await Promise.all([
+      exitParking(operatorA.accessToken, session.id),
+      forceCancel(operatorA.accessToken, session.id, "racing exit"),
+    ]);
+    const statuses = [exit.status, cancel.status];
+    expect(statuses.filter((s) => s === 200)).toHaveLength(1);
+    expect(statuses.filter((s) => s === 409)).toHaveLength(1);
+
+    const { rows } = await getPool().query<{
+      session_status: string;
+      slot_status: string;
+      reservation_state: string;
+    }>(
+      `SELECT ps.status AS session_status, sl.status AS slot_status, r.state AS reservation_state
+       FROM parking_sessions ps
+       JOIN parking_slots sl ON sl.id = ps.slot_id
+       JOIN reservations r ON r.id = ps.reservation_id
+       WHERE ps.id = $1`,
+      [session.id],
+    );
+    const sessionStatus = rows[0]!.session_status;
+    expect(["COMPLETED", "CANCELLED"]).toContain(sessionStatus);
+    expect(rows[0]!.slot_status).toBe("AVAILABLE");
+    expect(rows[0]!.reservation_state).toBe(
+      sessionStatus === "COMPLETED" ? "COMPLETED" : "CANCELLED",
+    );
+    expect(slotId).toBe(session.slotId);
+  });
+
+  it("concurrent force-cancel attempts → exactly one succeeds", async () => {
+    const { session } = await freshActiveSession(facilityA, operatorA);
+    const [a, b] = await Promise.all([
+      forceCancel(operatorA.accessToken, session.id, "concurrent A"),
+      forceCancel(operatorA.accessToken, session.id, "concurrent B"),
+    ]);
+    const successes = [a.status, b.status].filter((s) => s === 200).length;
+    const conflicts = [a.status, b.status].filter((s) => s === 409).length;
+    expect(successes).toBe(1);
+    expect(conflicts).toBe(1);
+
+    const { rows } = await getPool().query<{ status: string; cancel_reason: string | null }>(
+      `SELECT ps.status, r.cancel_reason FROM parking_sessions ps
+       JOIN reservations r ON r.id = ps.reservation_id WHERE ps.id = $1`,
+      [session.id],
+    );
+    expect(rows[0]!.status).toBe("CANCELLED");
+    expect(rows[0]!.cancel_reason).toMatch(/^concurrent [AB]$/);
+  });
+
+  it("a subsequent booking can use the released slot", async () => {
+    const freshSlot = await createSlot(operatorA.accessToken, facilityA.id);
+    const confirmed = await createConfirmedReservation(userA, facilityA, freshSlot, dayOffset++);
+    const entry = await enterParking(userA.accessToken, confirmed.reservation.reservationCode);
+    expect(entry.status).toBe(201);
+    const session = sessionBody(entry.body);
+
+    const res = await forceCancel(operatorA.accessToken, session.id, "making room");
+    expect(res.status).toBe(200);
+
+    const slotStatus = await getPool().query<{ status: string }>(
+      `SELECT status FROM parking_slots WHERE id = $1`,
+      [freshSlot.id],
+    );
+    expect(slotStatus.rows[0]!.status).toBe("AVAILABLE");
+
+    const rebooking = await createBooking(
+      userA.accessToken,
+      WINDOW(facilityA.id, freshSlot.id, dayOffset++),
+    );
+    expect(rebooking.status).toBe(201);
+    const reservation = (rebooking.body as BookingResponse).reservation;
+    expect(reservation.state).toBe("PENDING_PAYMENT");
+    expect(reservation.slotId).toBe(freshSlot.id);
+  });
+});

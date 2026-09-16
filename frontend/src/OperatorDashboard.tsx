@@ -28,7 +28,7 @@ import {
   updateOperatorFacility,
   updateOperatorSlot,
 } from "./api/operators";
-import { enterParking, exitParking } from "./api/sessions";
+import { cancelParkingSession, enterParking, exitParking } from "./api/sessions";
 import { AuthApiError } from "./api/auth";
 
 type LoadState = "loading" | "success" | "error";
@@ -221,6 +221,12 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [exitError, setExitError] = useState("");
   const [exitSuccess, setExitSuccess] = useState("");
   const exitRequestId = useRef(0);
+  const [cancelSessionConfirmingId, setCancelSessionConfirmingId] = useState<number>();
+  const [cancellingSessionId, setCancellingSessionId] = useState<number>();
+  const [cancelSessionReason, setCancelSessionReason] = useState("");
+  const [cancelSessionError, setCancelSessionError] = useState("");
+  const [cancelSessionSuccess, setCancelSessionSuccess] = useState("");
+  const cancelSessionRequestId = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -274,6 +280,12 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setExitError("");
     setExitSuccess("");
     exitRequestId.current += 1;
+    setCancelSessionConfirmingId(undefined);
+    setCancellingSessionId(undefined);
+    setCancelSessionReason("");
+    setCancelSessionError("");
+    setCancelSessionSuccess("");
+    cancelSessionRequestId.current += 1;
 
     void getOperatorMe(accessToken).then(
       (result) => {
@@ -550,17 +562,19 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
 
   function refreshOperatorSessions(withinRequestId: number): void {
     const refreshId = ++sessionsRefreshRequestId.current;
+    const isCurrentRequest =
+      withinRequestId === entryRequestId.current ||
+      withinRequestId === exitRequestId.current ||
+      withinRequestId === cancelSessionRequestId.current;
     void getOperatorSessions(accessToken).then(
       (result) => {
         if (refreshId !== sessionsRefreshRequestId.current) return;
-        if (withinRequestId !== entryRequestId.current && withinRequestId !== exitRequestId.current)
-          return;
+        if (!isCurrentRequest) return;
         setSessions(result.sessions);
       },
       (cause: unknown) => {
         if (refreshId !== sessionsRefreshRequestId.current) return;
-        if (withinRequestId !== entryRequestId.current && withinRequestId !== exitRequestId.current)
-          return;
+        if (!isCurrentRequest) return;
         setSessionsError(cause instanceof Error ? cause.message : "Unable to refresh sessions.");
       },
     );
@@ -670,6 +684,61 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       }
     } finally {
       if (requestId === exitRequestId.current) setExitingSessionId(undefined);
+    }
+  }
+
+  function handleRequestCancelSession(session: ParkingSession): void {
+    cancelSessionRequestId.current += 1;
+    setCancelSessionConfirmingId(session.id);
+    setCancellingSessionId(undefined);
+    setCancelSessionReason("");
+    setCancelSessionError("");
+    setCancelSessionSuccess("");
+  }
+
+  function handleKeepCancelSession(): void {
+    cancelSessionRequestId.current += 1;
+    setCancelSessionConfirmingId(undefined);
+    setCancellingSessionId(undefined);
+    setCancelSessionError("");
+    setCancelSessionSuccess("");
+  }
+
+  async function handleConfirmCancelSession(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (cancellingSessionId !== undefined || cancelSessionConfirmingId === undefined) return;
+    const session = sessions.find((s) => s.id === cancelSessionConfirmingId);
+    if (!session) {
+      handleKeepCancelSession();
+      return;
+    }
+    setCancelSessionError("");
+    setCancelSessionSuccess("");
+    const reason = cancelSessionReason.trim() || undefined;
+    const requestId = ++cancelSessionRequestId.current;
+    setCancellingSessionId(session.id);
+    try {
+      const cancelled = await cancelParkingSession(accessToken, session.id, reason);
+      if (requestId !== cancelSessionRequestId.current) return;
+      setSessions((current) =>
+        current.map((s) => (s.id === cancelled.session.id ? cancelled.session : s)),
+      );
+      setCancelSessionConfirmingId(undefined);
+      setCancelSessionReason("");
+      setCancelSessionSuccess(
+        `Session at ${sessionFacilityName(cancelled.session)} was cancelled; the slot was released.`,
+      );
+    } catch (cause) {
+      if (requestId !== cancelSessionRequestId.current) return;
+      setCancelSessionError(parkingSessionErrorMessage(cause, operator?.verificationStatus));
+      if (
+        cause instanceof AuthApiError &&
+        (cause.code === "SESSION_NOT_FOUND" || cause.code === "SESSION_NOT_ACTIVE")
+      ) {
+        void refreshOperatorSessions(requestId);
+      }
+    } finally {
+      if (requestId === cancelSessionRequestId.current) setCancellingSessionId(undefined);
     }
   }
 
@@ -1354,6 +1423,16 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
             {exitError}
           </p>
         )}
+        {cancelSessionSuccess && (
+          <p className="notice success" role="status">
+            {cancelSessionSuccess}
+          </p>
+        )}
+        {cancelSessionError && (
+          <p className="notice error" role="alert">
+            {cancelSessionError}
+          </p>
+        )}
         {sessionsState === "loading" && <p className="notice">Loading active sessions...</p>}
         {sessionsState === "error" && (
           <p className="notice error" role="alert">
@@ -1417,13 +1496,71 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                       </div>
                     </form>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleRequestExit(session)}
-                      disabled={exitingSessionId !== undefined}
-                    >
-                      Exit vehicle
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleRequestExit(session)}
+                        disabled={
+                          exitingSessionId !== undefined || cancellingSessionId !== undefined
+                        }
+                      >
+                        Exit vehicle
+                      </button>
+                      {cancelSessionConfirmingId === session.id ? (
+                        <form
+                          className="cancellation-confirmation"
+                          role="group"
+                          aria-labelledby={`cancel-session-title-${session.id}`}
+                          aria-busy={cancellingSessionId !== undefined}
+                          onSubmit={(event) => void handleConfirmCancelSession(event)}
+                        >
+                          <h4 id={`cancel-session-title-${session.id}`}>Cancel this session?</h4>
+                          <p>
+                            {sessionFacilityName(session)} · {sessionSlotLabel(session)}
+                          </p>
+                          <label htmlFor={`cancel-session-reason-${session.id}`}>
+                            Cancellation reason <span className="optional">(optional)</span>
+                          </label>
+                          <textarea
+                            id={`cancel-session-reason-${session.id}`}
+                            maxLength={500}
+                            value={cancelSessionReason}
+                            onChange={(event) => setCancelSessionReason(event.target.value)}
+                          />
+                          {cancellingSessionId === session.id && (
+                            <p className="cancellation-progress" aria-live="polite">
+                              Cancelling session...
+                            </p>
+                          )}
+                          <div className="cancellation-actions">
+                            <button type="submit" disabled={cancellingSessionId !== undefined}>
+                              {cancellingSessionId === session.id
+                                ? "Cancelling..."
+                                : "Confirm cancellation"}
+                            </button>
+                            <button
+                              className="secondary-button"
+                              type="button"
+                              disabled={cancellingSessionId !== undefined}
+                              onClick={handleKeepCancelSession}
+                            >
+                              Keep session
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <button
+                          className="cancel-reservation-button"
+                          type="button"
+                          onClick={() => handleRequestCancelSession(session)}
+                          disabled={
+                            exitingSessionId !== undefined || cancellingSessionId !== undefined
+                          }
+                        >
+                          Cancel session
+                        </button>
+                      )}
+                    </>
                   )}
                 </li>
               ))}

@@ -52,16 +52,19 @@ import {
   verifyParkingPassToken,
 } from "./pass-token.js";
 import {
+  cancelSession,
   completeSession,
   currentSlotStatus,
   findReservationByTokenHash,
   findReservationForEntry,
   findSessionByReservationForAccess,
   findSessionForAccess,
+  findSessionForOperator,
   generateEntryToken,
   hasActiveSessionForReservation,
   insertSession,
   listSessionsForOperator,
+  lockReservationForUpdate,
   occupySlot,
   releaseSlot,
   sha256hex,
@@ -460,5 +463,83 @@ export const sessionsService = {
     const operator = await assertVerifiedOperator(userId);
     const sessions = await listSessionsForOperator(getPool(), operator.id);
     return { sessions: sessions.map(toSessionDto) };
+  },
+
+  /**
+   * Force-exit / session cancellation (Phase 9 Block 4.2). Ends an ACTIVE
+   * parking session for the operator-cancellation path reserved by D-037:
+   * the session becomes CANCELLED, its slot is released to AVAILABLE, the
+   * reservation transitions ACTIVE → CANCELLED (D-035: no refunds in the
+   * mock), the availability cache is re-mirrored and a PARKING_SESSION_CANCELLED
+   * audit record is written — all in one transaction.
+   *
+   * Authorization: ONLY a VERIFIED operator of the session's facility may
+   * force-cancel (route gates PARKING_OPERATOR + assertVerifiedOperator; the
+   * facility scope is derived server-side in SQL — a frontend facility_id is
+   * never accepted). An operator of another facility or the reservation owner
+   * gets 404 (no existence disclosure).
+   *
+   * Concurrency: the session row is FOR UPDATE locked first, then the
+   * reservation row, then the slot via the guarded release; the guarded
+   * session transition (WHERE status = 'ACTIVE') means exactly one of a normal
+   * exit and a force-cancel can win — the loser still reads
+   * SESSION_NOT_ACTIVE and its transaction rolls back unchanged. A repeated
+   * force-cancel on a COMPLETED/CANCELLED session returns 409 SESSION_NOT_ACTIVE.
+   */
+  async cancelParkingSession(
+    userId: number,
+    sessionId: number,
+    reason?: string,
+  ): Promise<ParkingSessionResponse> {
+    const operator = await assertVerifiedOperator(userId);
+    return withTransaction(async (client) => {
+      const session = await findSessionForOperator(client, sessionId, operator.id);
+      if (!session) {
+        throw notFound("SESSION_NOT_FOUND", "Parking session not found");
+      }
+      if (session.status !== "ACTIVE") {
+        throw conflict("SESSION_NOT_ACTIVE", "This parking session is not active");
+      }
+
+      const reservationState = await lockReservationForUpdate(client, session.reservationId);
+      if (reservationState !== "ACTIVE") {
+        throw conflict("SESSION_NOT_ACTIVE", "This parking session is not active");
+      }
+
+      const released = await releaseSlot(client, session.slotId, session.facilityId);
+      const finalSlotStatus = released
+        ? "AVAILABLE"
+        : ((await currentSlotStatus(client, session.slotId)) ?? "AVAILABLE");
+
+      const cancelled = await cancelSession(client, session.id);
+      if (!cancelled) {
+        throw conflict("SESSION_NOT_ACTIVE", "This parking session is not active");
+      }
+
+      await reservationsRepository.updateState(client, session.reservationId, {
+        state: "CANCELLED",
+        cancelReason: reason?.trim() || null,
+        cancelledAt: new Date(),
+      });
+      await upsertAvailabilityState(client, session.facilityId, session.slotId, finalSlotStatus);
+
+      const trimmedReason = reason?.trim();
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "PARKING_SESSION_CANCELLED",
+        entityType: "PARKING_SESSION",
+        entityId: session.id,
+        metadata: {
+          facilityId: session.facilityId,
+          slotId: session.slotId,
+          reservationId: session.reservationId,
+          cancelledBy: "OPERATOR",
+          ...(trimmedReason ? { reason: trimmedReason } : {}),
+          slotReleased: released,
+        },
+      });
+
+      return { session: toSessionDto(cancelled) };
+    });
   },
 };

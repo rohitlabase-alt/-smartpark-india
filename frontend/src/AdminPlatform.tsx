@@ -33,6 +33,7 @@ const ACTION_LABELS: Record<AuditEventAction, string> = {
   PAYMENT_VERIFIED: "Payment verified",
   PARKING_SESSION_ENTRY: "Parking entry",
   PARKING_SESSION_EXIT: "Parking exit",
+  PARKING_SESSION_CANCELLED: "Parking session cancelled",
   GATE_ENTRY_VERIFIED: "Gate entry verified",
   GATE_ENTRY_REJECTED: "Gate entry rejected",
   GATE_EXIT_VERIFIED: "Gate exit verified",

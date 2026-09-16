@@ -216,10 +216,22 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 
 ---
 
+## D-039 — Phase 9 Block 4.2 operator force-exit (session `ACTIVE → CANCELLED`, operator-only, row-locked)
+
+- **Decision:** Implement the operator cancellation path that D-037 reserved for `parking_sessions.status = 'CANCELLED'`. New endpoint `POST /api/v1/parking-sessions/:id/cancel` (no schema change) ends an in-progress session as **CANCELLED** (a normal customer exit remains **COMPLETED**), so the two lifecycle outcomes are distinguishable in the ledger and audit trail. Body `{ reason?: string }` (optional, ≤500 chars, zod `.strict()`).
+- **Operator-only, facility-scoped in SQL.** `requireRole("PARKING_OPERATOR")` at the route plus the service's `assertVerifiedOperator` (`403 OPERATOR_NOT_VERIFIED`) — a reservation owner may **not** cancel their own session (they use `exit`; the request is rejected as `403`). The session is resolved by an operator-ownership join (`parking_sessions → parking_facilities WHERE f.operator_id = $2`); a body-supplied `facilityId` is rejected by the strict schema and never trusted. A miss (foreign/unknown/other-facility session) → `404 SESSION_NOT_FOUND`, no existence disclosure.
+- **State machine (atomic, audited):** session `ACTIVE → CANCELLED` (guarded `UPDATE … WHERE status='ACTIVE'`, `exit_at` stamped), slot `OCCUPIED → AVAILABLE` (existing guarded `releaseSlot` + operator-set statuses preserved), reservation `ACTIVE → CANCELLED` (`cancel_reason` = trimmed reason/`null`, `cancelled_at` = now), availability cache re-mirrored, audit `PARKING_SESSION_CANCELLED` (`{ facilityId, slotId, reservationId, cancelledBy: "OPERATOR", reason?, slotReleased }`) — one transaction. No refund in the mock (D-035 unchanged).
+- **Concurrency:** lock order session (`FOR UPDATE OF s`) → reservation (`FOR UPDATE`) → slot (guarded release) makes a force-cancel serialize with a concurrent normal exit on the session row; the guarded session UPDATE means **exactly one** transition wins. The loser (or a repeat on a `CANCELLED`/`COMPLETED` session) gets `409 SESSION_NOT_ACTIVE` and the whole transaction rolls back, leaving session/slot/reservation untouched. A released slot is immediately bookable again (exclusion constraint ignores the `CANCELLED` reservation).
+- **Frontend:** `api/sessions.ts` `cancelParkingSession`; `OperatorDashboard.tsx` per-session "Cancel session" control with an inline confirm + optional reason (mirrors the exit confirm UX); `AdminPlatform.tsx` audit label `PARKING_SESSION_CANCELLED`.
+- **Status:** ACTIVE — verified end-to-end (14 new DB-backed tests in `parking-sessions.integration.test.ts`; 7 new `OperatorDashboard.test.tsx` flows).
+
+---
+
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
+| 2026-09-16 | D-039 | Added — Phase 9 operator force-exit (`POST /parking-sessions/:id/cancel`; session `ACTIVE → CANCELLED`, reservation `ACTIVE → CANCELLED`, operator-only + facility-scoped-in-SQL, row-locked race-exactly-one, `PARKING_SESSION_CANCELLED` audit) | Phase 9 Block 4.2 (session cancellation) | sessions, operators (verification), bookings (reservations), audit, shared, web | none (no migration) |
 | 2026-09-16 | D-038 | Added — Phase 9 parking-pass token (deterministic `ppk_` JWT, SHA-256 digest at rest / partial unique, digest-format guard, exactly-one entry union, manual occupancy guard `SLOT_IN_USE`, gate audit + platform occupancy fields; `/gate/*` superseded) | Phase 9 Block 3 (gate) | sessions, parking (slots), audit, platform, bookings, shared | new column + partial unique index on reservations (0010) |
 | 2026-09-09 | D-036 | Added — Phase 8 admin operator verification (strict review-first workflow; approved_by/approved_at on approve; operational gating via assertVerifiedOperator) | Phase 8 (admin verification) | admin (new), operators, parking (facilities/slots), bookings, shared (no change) | none (no migration) |
 | 2026-09-06 | D-035 | Added — Phase 7 mock payment foundation (PENDING_PAYMENT lifecycle, JSONB hourlyRate pricing, no refunds in mock) | Phase 7 (payments) | bookings, payments, parking (pricing), shared | new tables (payments, transactions, payment_idempotency_keys) + reservations state CHECK/exclusion widen (0006) |

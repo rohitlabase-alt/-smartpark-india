@@ -1812,4 +1812,132 @@ describe("operator parking operations", () => {
     expect(container.textContent).toContain("0 active");
     expect(fetchMock).toHaveBeenCalledTimes(7);
   });
+
+  describe("operator force-exit cancellation (Phase 9 Block 4.2)", () => {
+    const cancelledSession: ParkingSession = {
+      ...activeSession,
+      status: "CANCELLED",
+      exitAt: "2026-09-10T11:00:00.000Z",
+    };
+
+    it("opens an inline cancel-session confirmation with an optional reason", async () => {
+      const fetchMock = await renderParkingOps([activeSession]);
+      await act(async () => buttonWithText("Cancel session").click());
+      const confirm = container.querySelector(".cancellation-confirmation")!;
+      expect(confirm.textContent).toContain("Cancel this session?");
+      expect(confirm.textContent).toContain("Koregaon Lot · A01");
+      expect(confirm.querySelector("#cancel-session-reason-501")).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it("keeps the session when the operator backs out", async () => {
+      const fetchMock = await renderParkingOps([activeSession]);
+      await act(async () => buttonWithText("Cancel session").click());
+      await act(async () => buttonWithText("Keep session").click());
+      await settle();
+      expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+      expect(buttonWithText("Cancel session")).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it("cancels an active session with a reason and updates from the authoritative response", async () => {
+      const fetchMock = await renderParkingOps([activeSession]);
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: cancelledSession }), { status: 200 }),
+      );
+      await act(async () => buttonWithText("Cancel session").click());
+      setTextarea("cancel-session-reason-501", "venue closed early");
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+      );
+      await settle();
+      expect(fetchMock.mock.calls[5]![0]).toContain("/parking-sessions/501/cancel");
+      expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+        method: "POST",
+        body: JSON.stringify({ reason: "venue closed early" }),
+      });
+      expect(container.textContent).toContain(
+        "Session at Koregaon Lot was cancelled; the slot was released.",
+      );
+      expect(container.textContent).toContain(
+        "No vehicles are currently parked in your facilities.",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("cancels without a reason (empty body)", async () => {
+      const fetchMock = await renderParkingOps([activeSession]);
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: cancelledSession }), { status: 200 }),
+      );
+      await act(async () => buttonWithText("Cancel session").click());
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+      );
+      await settle();
+      expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      expect(container.textContent).toContain("was cancelled; the slot was released.");
+    });
+
+    it("shows cancelling state and prevents duplicate submissions", async () => {
+      let resolveCancel!: (response: Response) => void;
+      const fetchMock = await renderParkingOps([activeSession]);
+      fetchMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveCancel = resolve;
+        }),
+      );
+      await act(async () => buttonWithText("Cancel session").click());
+      const form = container.querySelector<HTMLFormElement>(".cancellation-confirmation")!;
+      await act(async () => form.requestSubmit());
+      expect(container.textContent).toContain("Cancelling session...");
+      expect(
+        container.querySelector<HTMLButtonElement>(".cancellation-confirmation button[type=submit]")
+          ?.disabled,
+      ).toBe(true);
+      await act(async () => form.requestSubmit());
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+      resolveCancel(new Response(JSON.stringify({ session: cancelledSession }), { status: 200 }));
+      await settle();
+      expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    });
+
+    it("maps an unverified operator error to the verification message", async () => {
+      const pendingOperator: Operator = {
+        ...operator,
+        verificationStatus: "PENDING" as Operator["verificationStatus"],
+      };
+      const fetchMock = await renderParkingOps([activeSession], pendingOperator);
+      fetchMock.mockResolvedValueOnce(
+        reservationError(403, "OPERATOR_NOT_VERIFIED", "not verified"),
+      );
+      await act(async () => buttonWithText("Cancel session").click());
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+      );
+      await settle();
+      expect(container.textContent).toContain(
+        "Your operator account is waiting for admin verification.",
+      );
+    });
+
+    it("keeps the confirmation open and refreshes sessions when the cancel loses the session", async () => {
+      const fetchMock = await renderParkingOps([activeSession]);
+      fetchMock
+        .mockResolvedValueOnce(reservationError(409, "SESSION_NOT_ACTIVE", "already cancelled"))
+        .mockResolvedValueOnce(sessionsResponse([]));
+      await act(async () => buttonWithText("Cancel session").click());
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+      );
+      await settle();
+      expect(container.textContent).toContain("This session is no longer active.");
+      expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/sessions");
+      expect(container.textContent).toContain("0 active");
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+    });
+  });
 });

@@ -2,6 +2,7 @@
  * Parking session routes (docs/API_SPEC.md §2 parking-sessions).
  * Phase 9 Block 1: entry/exit foundation for operational parking sessions.
  * Phase 9 Block 3: parking-pass verification-token entry + pass read.
+ * Phase 9 Block 4.2: operator force-exit (/:id/cancel).
  * All routes require auth. Ownership is enforced server-side (a session can
  * be acted upon by the reservation owner or a VERIFIED facility operator);
  * identifier lookups surface 404 so unrelated users cannot probe others'
@@ -14,7 +15,7 @@ import { asyncHandler } from "../../http/async-handler.js";
 import { notFound } from "../../http/errors.js";
 import type { AuthenticatedRequest } from "../../http/context.js";
 import type { ParkingSessionEntryRequest } from "@smartpark/shared";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth, requireRole } from "../../middleware/auth.js";
 import { validateBody } from "../../middleware/validate.js";
 import { sessionsService } from "./sessions.service.js";
 
@@ -44,6 +45,13 @@ function parseSessionId(raw: string): number | undefined {
   const id = Number(raw);
   return Number.isInteger(id) && id > 0 ? id : undefined;
 }
+
+/** Force-exit accepts an optional cancellation reason (D-035: no refunds). */
+const cancelSessionSchema = z
+  .object({
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
 
 export const sessionsRouter = Router();
 
@@ -101,5 +109,31 @@ sessionsRouter.post(
       throw notFound("SESSION_NOT_FOUND", "Parking session not found");
     }
     res.json(await sessionsService.exitParking(req.auth.userId, req.auth.roles, sessionId));
+  }),
+);
+
+/**
+ * Operator force-exit (Phase 9 Block 4.2): cancels an ACTIVE parking session.
+ * PARKING_OPERATOR role is required (the owner path intentionally does NOT
+ * apply — only the facility operator may cancel a session); the service then
+ * requires the org to be VERIFIED and to own the session's facility
+ * (403 OPERATOR_NOT_VERIFIED / 404 no-disclosure otherwise).
+ */
+sessionsRouter.post(
+  "/:id/cancel",
+  requireRole("PARKING_OPERATOR"),
+  validateBody(cancelSessionSchema),
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    const sessionId = parseSessionId(req.params.id);
+    if (!sessionId) {
+      throw notFound("SESSION_NOT_FOUND", "Parking session not found");
+    }
+    res.json(
+      await sessionsService.cancelParkingSession(
+        req.auth.userId,
+        sessionId,
+        (req.body as { reason?: string } | undefined)?.reason,
+      ),
+    );
   }),
 );

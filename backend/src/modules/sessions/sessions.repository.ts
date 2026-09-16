@@ -278,6 +278,30 @@ export async function listSessionsForOperator(
 }
 
 /**
+ * Looks up a session by id, scoped to a VERIFIED operator's own facilities
+ * (operator force-exit path). Unlike findSessionForAccess there is no owner
+ * branch: only the facility operator may cancel a session. Row-locked
+ * (FOR UPDATE OF s) so a concurrent normal exit / force-cancel serializes on
+ * this row and only one transition can win (docs/API_SPEC.md §2
+ * parking-sessions). Any miss surfaces as 404 (no existence disclosure).
+ */
+export async function findSessionForOperator(
+  target: Queryable,
+  sessionId: number,
+  operatorId: number,
+): Promise<ParkingSessionRow | undefined> {
+  const { rows } = await target.query<ParkingSessionResult>(
+    `SELECT ${SELECT_COLUMNS_QUALIFIED}
+     FROM parking_sessions s
+     JOIN parking_facilities f ON f.id = s.facility_id AND f.deleted_at IS NULL
+     WHERE s.id = $1 AND f.operator_id = $2
+     FOR UPDATE OF s`,
+    [sessionId, operatorId],
+  );
+  return rows[0] ? mapSession(rows[0]) : undefined;
+}
+
+/**
  * Maps the two race-relevant 23505 unique violations on active parking sessions
  * to the documented deterministic 409s (docs/API_SPEC.md §2 parking-sessions).
  * The partial unique indexes (active_reservation / active_slot) are the primary
@@ -349,6 +373,44 @@ export async function completeSession(
     [sessionId],
   );
   return rows[0] ? mapSession(rows[0]) : undefined;
+}
+
+/**
+ * Marks a parking session CANCELLED on the given client (operator force-exit).
+ * Only transitions an ACTIVE session — exactly like exit — so a duplicate
+ * force-cancel or a lost race against a normal exit is a no-op (guard
+ * violated → the caller throws SESSION_NOT_ACTIVE and the whole transaction
+ * rolls back, leaving session, slot and reservation unchanged).
+ */
+export async function cancelSession(
+  client: PoolClient,
+  sessionId: number,
+): Promise<ParkingSessionRow | undefined> {
+  const { rows } = await client.query<ParkingSessionResult>(
+    `UPDATE parking_sessions
+     SET status = 'CANCELLED', exit_at = now(), updated_at = now()
+     WHERE id = $1 AND status = 'ACTIVE'
+     RETURNING ${SELECT_COLUMNS}`,
+    [sessionId],
+  );
+  return rows[0] ? mapSession(rows[0]) : undefined;
+}
+
+/**
+ * Row-locks a reservation on the given client (FOR UPDATE) so the force-exit
+ * transition serializes with any concurrent reservation-cancellation attempt.
+ * Returns the reservation's current state for the caller's guard, or undefined
+ * if the row does not exist.
+ */
+export async function lockReservationForUpdate(
+  client: PoolClient,
+  reservationId: number,
+): Promise<string | undefined> {
+  const { rows } = await client.query<{ state: string }>(
+    `SELECT state FROM reservations WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+    [reservationId],
+  );
+  return rows[0]?.state;
 }
 
 /**

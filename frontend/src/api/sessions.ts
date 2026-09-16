@@ -216,3 +216,34 @@ export async function exitParking(
 
   return body;
 }
+
+/**
+ * Operator force-exit (Phase 9 Block 4.2): cancels an ACTIVE parking session.
+ * Only a VERIFIED operator of the session's facility may call it — a plain
+ * user gets 403 and an operator of another facility gets 404 (no existence
+ * disclosure). The server stamps the session CANCELLED, releases the slot and
+ * cancels the reservation; `reason` is optional and surfaced on the audit
+ * trail / reservation record.
+ */
+export async function cancelParkingSession(
+  accessToken: string,
+  sessionId: number,
+  reason?: string,
+): Promise<ParkingSessionResponse> {
+  const body = await requestJson(
+    `/parking-sessions/${sessionId}/cancel`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ ...(reason ? { reason } : {}) }),
+    },
+    "Unable to reach the parking session service.",
+    "Unable to cancel the parking session.",
+  );
+
+  if (!isParkingSessionResponse(body)) {
+    throw new AuthApiError("The parking session cancel response was incomplete or malformed.");
+  }
+
+  return body;
+}

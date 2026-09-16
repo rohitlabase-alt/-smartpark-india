@@ -811,6 +811,7 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
   let facilityA1: ParkingFacility;
   let facilityA2: ParkingFacility;
   let facilityB: ParkingFacility;
+  let facilityA1Slot: ParkingSlot;
 
   beforeAll(async () => {
     operatorA = await registerVerifiedOperatorSession("op-cancel-A");
@@ -823,12 +824,19 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
     await approveFacility(admin.accessToken, facilityA1.id);
     await approveFacility(admin.accessToken, facilityA2.id);
     await approveFacility(admin.accessToken, facilityB.id);
+    facilityA1Slot = await createSlot(operatorA.accessToken, facilityA1.id, {
+      slotCode: "OPC-S1",
+    });
   });
 
-  async function makeBooking(facilityId: number, dayOffset: number): Promise<string> {
+  async function makeBooking(
+    facilityId: number,
+    dayOffset: number,
+    slotId?: number,
+  ): Promise<string> {
     const created = await createBooking(
       regularUser.accessToken,
-      WINDOW(facilityId, undefined, dayOffset),
+      WINDOW(facilityId, slotId, dayOffset),
     );
     expect(created.status).toBe(201);
     return (created.body as BookingResponse).reservation.reservationCode;
@@ -836,6 +844,24 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
 
   function cancelEndpoint(code: string): string {
     return `/api/v1/operators/me/reservations/${code}/cancel`;
+  }
+
+  async function payToConfirmed(code: string): Promise<void> {
+    const initiated = await jsonPost(
+      "/api/v1/payments/initiate",
+      { reservationCode: code },
+      regularUser.accessToken,
+    );
+    expect(initiated.status).toBe(200);
+    const providerTxnId = (initiated.body as { payment: { providerTxnId: string } }).payment
+      .providerTxnId;
+    const verified = await jsonPost(
+      `/api/v1/payments/${encodeURIComponent(providerTxnId)}/verify`,
+      {},
+      regularUser.accessToken,
+    );
+    expect(verified.status).toBe(200);
+    expect((verified.body as BookingResponse).reservation.state).toBe("CONFIRMED");
   }
 
   it("rejects unauthenticated requests", async () => {
@@ -942,6 +968,52 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
     const res = await jsonPost(cancelEndpoint(code), {}, operatorA.accessToken);
     expect(res.status).toBe(422);
     expect(errorCode(res.body)).toBe("CANNOT_CANCEL_COMPLETED");
+  });
+
+  it("409 cannot cancel a reservation with an ACTIVE session (lifecycle guard)", async () => {
+    const code = await makeBooking(facilityA1.id, 18, facilityA1Slot.id);
+    await payToConfirmed(code);
+    const entered = await jsonPost(
+      "/api/v1/parking-sessions/entry",
+      { reservationCode: code },
+      regularUser.accessToken,
+    );
+    expect(entered.status).toBe(201);
+
+    const res = await jsonPost(
+      cancelEndpoint(code),
+      { reason: "mid-session" },
+      operatorA.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CANNOT_CANCEL");
+
+    const { rows } = await getPool().query<{
+      reservation_state: string;
+      session_status: string;
+      slot_status: string;
+    }>(
+      `SELECT r.state AS reservation_state, ps.status AS session_status, sl.status AS slot_status
+       FROM parking_sessions ps
+       JOIN reservations r ON r.id = ps.reservation_id
+       JOIN parking_slots sl ON sl.id = ps.slot_id
+       WHERE r.reservation_code = $1`,
+      [code],
+    );
+    expect(rows[0]).toBeDefined();
+    expect(rows[0]!.reservation_state).toBe("ACTIVE");
+    expect(rows[0]!.session_status).toBe("ACTIVE");
+    expect(rows[0]!.slot_status).toBe("OCCUPIED");
+  });
+
+  it("409 cannot cancel a FAILED reservation", async () => {
+    const code = await makeBooking(facilityA1.id, 19);
+    await getPool().query("UPDATE reservations SET state = 'FAILED' WHERE reservation_code = $1", [
+      code,
+    ]);
+    const res = await jsonPost(cancelEndpoint(code), {}, operatorA.accessToken);
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("CANNOT_CANCEL");
   });
 
   it("customer cancellation endpoint is unaffected", async () => {
