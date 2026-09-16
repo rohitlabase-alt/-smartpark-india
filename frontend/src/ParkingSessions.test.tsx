@@ -232,6 +232,71 @@ describe("driver parking sessions", () => {
     }
   });
 
+  it("reveals the parking pass token and refetches it lazily only once", async () => {
+    const fetchMock = await renderDetailFor([confirmedReservation]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ verificationToken: "ppk_gatetoken1" }), { status: 200 }),
+    );
+    await clickButton("Show parking pass");
+    await settleAsyncWork();
+    expect(fetchMock.mock.calls[3]![0]).toContain(
+      "/parking-sessions/by-reservation/BKG-ABC123/pass",
+    );
+    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
+      headers: { Authorization: "Bearer access-token" },
+    });
+    expect(
+      container.querySelector<HTMLElement>("[aria-label='Parking pass token']")?.textContent,
+    ).toBe("ppk_gatetoken1");
+    expect(container.textContent).toContain("Copy parking pass");
+    expect(container.textContent).toContain("Hide parking pass");
+    expect(container.textContent).not.toContain("Show parking pass");
+
+    await clickButton("Hide parking pass");
+    await settleAsyncWork();
+    expect(container.querySelector("[aria-label='Parking pass token']")).toBeNull();
+    await clickButton("Show parking pass");
+    await settleAsyncWork();
+    expect(
+      container.querySelector<HTMLElement>("[aria-label='Parking pass token']")?.textContent,
+    ).toBe("ppk_gatetoken1");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("copies the parking pass token to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      const fetchMock = await renderDetailFor([confirmedReservation]);
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ verificationToken: "ppk_copy-me" }), { status: 200 }),
+      );
+      await clickButton("Show parking pass");
+      await settleAsyncWork();
+      await clickButton("Copy parking pass");
+      await settleAsyncWork();
+      expect(writeText).toHaveBeenCalledWith("ppk_copy-me");
+      expect(container.textContent).toContain("Copied");
+    } finally {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it("shows a friendly error when the parking pass cannot be issued", async () => {
+    const fetchMock = await renderDetailFor([confirmedReservation]);
+    fetchMock.mockResolvedValueOnce(apiError(409, "RESERVATION_NOT_ENTRYABLE", "not ready yet"));
+    await clickButton("Show parking pass");
+    await settleAsyncWork();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "This reservation is not ready for entry yet.",
+    );
+    expect(container.textContent).toContain("Show parking pass");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("shows a friendly error when the booking reference is unknown", async () => {
     const fetchMock = await renderDetailFor([confirmedReservation]);
     fetchMock.mockResolvedValueOnce(apiError(404, "BOOKING_NOT_FOUND", "no such reservation"));

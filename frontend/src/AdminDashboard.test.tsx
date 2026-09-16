@@ -32,6 +32,9 @@ const emptySummary: PlatformSummary = {
   reservationsByStatus: zeroMap(RESERVATION_STATES),
   payments: 0,
   paymentsByStatus: zeroMap(PAYMENT_STATUSES),
+  activeParkingSessions: 0,
+  occupiedSlots: 0,
+  availableSlots: 0,
   recentAuditEvents: [],
   recentAuditEventCount: 0,
 };
@@ -460,7 +463,7 @@ describe("AdminDashboard", () => {
     );
     expect(container.textContent).toContain("Platform analytics");
     expect(container.textContent).toContain("Platform Overview");
-    expect(container.querySelectorAll(".metric")).toHaveLength(8);
+    expect(container.querySelectorAll(".metric")).toHaveLength(11);
   });
 
   it("returns to the operators section without refetching analytics", async () => {

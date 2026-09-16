@@ -28,7 +28,12 @@ import {
   getReservation,
 } from "./api/reservations";
 import { initiatePayment, verifyPayment } from "./api/payments";
-import { enterParking, exitParking, getParkingSessionByReservation } from "./api/sessions";
+import {
+  enterParking,
+  exitParking,
+  getParkingSessionByReservation,
+  getParkingSessionPass,
+} from "./api/sessions";
 import {
   AuthApiError,
   clearMemorySession,
@@ -180,6 +185,12 @@ function parkingSessionErrorMessage(cause: unknown): string {
         return "No parking session was found for this reservation.";
       case "SESSION_ALREADY_ACTIVE":
         return "This reservation already has an active parking session.";
+      case "INVALID_TOKEN":
+        return "This parking pass is invalid or does not match any booking.";
+      case "TOKEN_NOT_YET_VALID":
+        return "This parking pass is not valid yet.";
+      case "TOKEN_EXPIRED":
+        return "This parking pass has expired.";
       case "RESERVATION_NOT_ENTRYABLE":
         return "This reservation is not ready for entry yet.";
       case "FACILITY_NOT_ENTRYABLE":
@@ -210,7 +221,50 @@ function ParkingSessionPanel({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [copiedEntryToken, setCopiedEntryToken] = useState(false);
+  const [passToken, setPassToken] = useState<string>();
+  const [passLoading, setPassLoading] = useState(false);
+  const [passError, setPassError] = useState("");
+  const [passVisible, setPassVisible] = useState(false);
+  const [copiedPassToken, setCopiedPassToken] = useState(false);
   const requestId = useRef(0);
+
+  async function handleRevealPass(): Promise<void> {
+    if (passLoading) return;
+    const currentRequestId = ++requestId.current;
+    setPassError("");
+    try {
+      if (!passToken) {
+        setPassLoading(true);
+        const result = await getParkingSessionPass(accessToken, reservation.reservationCode);
+        if (currentRequestId !== requestId.current) return;
+        setPassToken(result.verificationToken);
+      }
+      setPassVisible(true);
+    } catch (cause) {
+      if (currentRequestId !== requestId.current) return;
+      setPassError(parkingSessionErrorMessage(cause));
+    } finally {
+      if (currentRequestId === requestId.current) setPassLoading(false);
+    }
+  }
+
+  function handleHidePass(): void {
+    requestId.current += 1;
+    setPassVisible(false);
+    setPassError("");
+  }
+
+  async function copyParkingPass(): Promise<void> {
+    if (!passToken) return;
+    setCopiedPassToken(false);
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(passToken);
+      setCopiedPassToken(true);
+    } catch {
+      setCopiedPassToken(false);
+    }
+  }
 
   async function handleEnter(): Promise<void> {
     if (state === "entering") return;
@@ -219,7 +273,9 @@ function ParkingSessionPanel({
     setError("");
     setMessage("");
     try {
-      const result = await enterParking(accessToken, reservation.reservationCode);
+      const result = await enterParking(accessToken, {
+        reservationCode: reservation.reservationCode,
+      });
       if (currentRequestId !== requestId.current) return;
       setSession(result.session);
       setEntryToken(result.entryToken);
@@ -336,6 +392,36 @@ function ParkingSessionPanel({
             </div>
           )}
         </dl>
+      )}
+      {!hasSession && state !== "entering" && state !== "exiting" && (
+        <div className="parking-pass-card">
+          <p className="entry-token-label">
+            Parking pass <span className="optional">(gate verification token)</span>
+          </p>
+          {passError && (
+            <p className="notice error" role="alert">
+              {passError}
+            </p>
+          )}
+          {!passVisible && (
+            <button type="button" onClick={() => void handleRevealPass()}>
+              {passLoading ? "Loading..." : "Show parking pass"}
+            </button>
+          )}
+          {passVisible && passToken && (
+            <div role="status">
+              <code className="entry-token-code" aria-label="Parking pass token">
+                {passToken}
+              </code>
+              <button type="button" onClick={() => void copyParkingPass()}>
+                {copiedPassToken ? "Copied" : "Copy parking pass"}
+              </button>
+              <button className="secondary-button" type="button" onClick={handleHidePass}>
+                Hide parking pass
+              </button>
+            </div>
+          )}
+        </div>
       )}
       {entryToken && (
         <div className="parking-entry-result">

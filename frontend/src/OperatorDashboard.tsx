@@ -108,6 +108,10 @@ function parkingSessionErrorMessage(cause: unknown, verificationStatus?: Operato
     if (cause.code === "BOOKING_NOT_FOUND") return "No reservation matches this booking reference.";
     if (cause.code === "SESSION_NOT_FOUND")
       return "No parking session was found for this reference.";
+    if (cause.code === "INVALID_TOKEN")
+      return "This parking pass is invalid or does not match any booking.";
+    if (cause.code === "TOKEN_NOT_YET_VALID") return "This parking pass is not valid yet.";
+    if (cause.code === "TOKEN_EXPIRED") return "This parking pass has expired.";
     if (cause.code === "SESSION_ALREADY_ACTIVE")
       return "This reservation already has an active parking session.";
     if (cause.code === "RESERVATION_NOT_ENTRYABLE")
@@ -205,6 +209,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [sessionsError, setSessionsError] = useState("");
   const sessionsRefreshRequestId = useRef(0);
   const [entryReference, setEntryReference] = useState("");
+  const [entryToken, setEntryToken] = useState("");
   const [entrySubmitting, setEntrySubmitting] = useState(false);
   const [entryError, setEntryError] = useState("");
   const [entrySuccess, setEntrySuccess] = useState("");
@@ -257,6 +262,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSessionsError("");
     sessionsRefreshRequestId.current += 1;
     setEntryReference("");
+    setEntryToken("");
     setEntrySubmitting(false);
     setEntryError("");
     setEntrySuccess("");
@@ -564,12 +570,21 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     event.preventDefault();
     if (entrySubmitting) return;
     const reference = entryReference.trim();
-    if (!reference) {
+    const token = entryToken.trim();
+    if (!reference && !token) {
       setEntryError("Enter a booking reference to verify.");
+      return;
+    }
+    if (reference && token) {
+      setEntryError("Provide exactly one of a booking reference or a parking-pass token.");
       return;
     }
     if (reference.length > 64) {
       setEntryError("Booking reference must be 64 characters or fewer.");
+      return;
+    }
+    if (token.length > 4096) {
+      setEntryError("Parking-pass token must be 4096 characters or fewer.");
       return;
     }
     setEntryError("");
@@ -577,12 +592,17 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setEntryResult(undefined);
     setCopiedEntryToken(false);
     const requestId = ++entryRequestId.current;
+    const credential = reference ? { reservationCode: reference } : { verificationToken: token };
     setEntrySubmitting(true);
     try {
-      const result = await enterParking(accessToken, reference);
+      const result = await enterParking(accessToken, credential);
       if (requestId !== entryRequestId.current) return;
       setEntryResult(result);
-      setEntrySuccess(`${reference} entered: the session is now active.`);
+      setEntrySuccess(
+        reference
+          ? `${reference} entered: the session is now active.`
+          : "Parking pass verified: the session is now active.",
+      );
       void refreshOperatorSessions(requestId);
     } catch (cause) {
       if (requestId !== entryRequestId.current) return;
@@ -1259,6 +1279,21 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
             value={entryReference}
             onChange={(event) => {
               setEntryReference(event.target.value);
+              setEntryToken("");
+              setEntryError("");
+              setEntrySuccess("");
+            }}
+          />
+          <p className="entry-or">or</p>
+          <label htmlFor="operator-entry-token">Parking-pass token</label>
+          <input
+            id="operator-entry-token"
+            maxLength={4096}
+            value={entryToken}
+            placeholder="ppk_…"
+            onChange={(event) => {
+              setEntryToken(event.target.value);
+              setEntryReference("");
               setEntryError("");
               setEntrySuccess("");
             }}

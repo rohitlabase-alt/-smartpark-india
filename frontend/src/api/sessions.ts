@@ -1,6 +1,8 @@
 import {
   PARKING_SESSION_STATUSES,
+  type ParkingPassResponse,
   type ParkingSession,
+  type ParkingSessionEntryRequest,
   type ParkingSessionEntryResponse,
   type ParkingSessionResponse,
 } from "@smartpark/shared";
@@ -26,6 +28,14 @@ export function isParkingSession(value: unknown): value is ParkingSession {
     PARKING_SESSION_STATUSES.includes(session.status as ParkingSession["status"]) &&
     typeof session.createdAt === "string" &&
     typeof session.updatedAt === "string"
+  );
+}
+
+function isParkingPassResponse(value: unknown): value is ParkingPassResponse {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { verificationToken?: unknown }).verificationToken === "string"
   );
 }
 
@@ -91,19 +101,21 @@ async function requestJson(
 
 /**
  * Entry: converts a paid/confirmed reservation into an active parking session.
- * The returned entryToken is a one-time bearer credential (safe for a future
- * QR / gate flow) and is never persisted or returned again.
+ * Accepts exactly ONE credential — a booking reference OR a parking-pass
+ * verification token (the server enforces the exclusive-or). The returned
+ * entryToken is a one-time bearer credential (safe for a future QR / gate
+ * flow) and is never persisted or returned again.
  */
 export async function enterParking(
   accessToken: string,
-  reservationCode: string,
+  credential: ParkingSessionEntryRequest,
 ): Promise<ParkingSessionEntryResponse> {
   const body = await requestJson(
     "/parking-sessions/entry",
     {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ reservationCode }),
+      body: JSON.stringify(credential),
     },
     "Unable to reach the parking session service.",
     "Unable to enter the parking session.",
@@ -111,6 +123,31 @@ export async function enterParking(
 
   if (!isParkingSessionEntryResponse(body)) {
     throw new AuthApiError("The parking session entry response was incomplete or malformed.");
+  }
+
+  return body;
+}
+
+/**
+ * Reads the parking-pass verification token for a confirmed reservation
+ * (reservation owner or a VERIFIED operator of its facility). The token is
+ * deterministic and unsigned-for-format-guard — the driver presents it at the
+ * gate, and the operator may scan it to verify and enter the vehicle. The raw
+ * token is never stored server-side; only its SHA-256 digest is.
+ */
+export async function getParkingSessionPass(
+  accessToken: string,
+  reservationCode: string,
+): Promise<ParkingPassResponse> {
+  const body = await requestJson(
+    `/parking-sessions/by-reservation/${encodeURIComponent(reservationCode)}/pass`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+    "Unable to reach the parking session service.",
+    "Unable to load the parking pass.",
+  );
+
+  if (!isParkingPassResponse(body)) {
+    throw new AuthApiError("The parking pass response was incomplete or malformed.");
   }
 
   return body;

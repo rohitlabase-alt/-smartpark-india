@@ -15,6 +15,7 @@ import type { InitiatePaymentResponse, Payment, VerifyPaymentResponse } from "@s
 import { conflict, notFound } from "../../http/errors.js";
 import { withTransaction } from "../../db.js";
 import { reservationsRepository, toReservationDto } from "../bookings/reservations.repository.js";
+import { hashParkingPassToken, signParkingPassToken } from "../sessions/pass-token.js";
 import { MockPaymentProvider } from "./providers/mock-payment-provider.js";
 import type { PaymentProvider } from "./providers/payment-provider.js";
 import { paymentsRepository, toPaymentDto } from "./payments.repository.js";
@@ -147,6 +148,18 @@ export const paymentsService = {
             "The reservation is no longer pending payment",
           );
         }
+        // Issue the deterministic parking-pass verification token atomically
+        // with confirmation: only its SHA-256 digest is stored at rest, never
+        // the raw token (docs/SECURITY.md, docs/DATABASE.md §2.12).
+        const passToken = await signParkingPassToken(
+          confirmedReservation.reservationCode,
+          confirmedReservation.endsAt,
+        );
+        await reservationsRepository.persistVerificationTokenHash(
+          client,
+          confirmedReservation.id,
+          hashParkingPassToken(passToken),
+        );
         await paymentsRepository.insertTransaction(client, {
           paymentId: payment.id,
           kind: "CHARGE",

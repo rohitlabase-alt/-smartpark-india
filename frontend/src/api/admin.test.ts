@@ -546,6 +546,9 @@ describe("platform summary API client", () => {
     },
     payments: 6,
     paymentsByStatus: { PENDING: 2, PAID: 4, REFUNDED: 0, FAILED: 0 },
+    activeParkingSessions: 1,
+    occupiedSlots: 1,
+    availableSlots: 11,
     recentAuditEvents: [],
     recentAuditEventCount: 0,
   };

@@ -118,6 +118,21 @@ export const slotsRepository = {
     return rows[0] ? mapSlot(rows[0]) : undefined;
   },
 
+  /**
+   * Row-locked slot read on a caller's transaction client. Serializes manual
+   * slot-status edits against the guarded occupancy UPDATE that the parking
+   * entry transaction performs, so an operator cannot flip an OCCUPIED slot
+   * away from OCCUPIED between an entry's slot-occupy and session-insert
+   * (docs/SECURITY.md §5, docs/API_SPEC.md §2 slots).
+   */
+  async findByIdForUpdate(client: PoolClient, id: number): Promise<SlotRow | undefined> {
+    const { rows } = await client.query<SlotResult>(
+      `SELECT ${SELECT_COLUMNS} FROM parking_slots WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [id],
+    );
+    return rows[0] ? mapSlot(rows[0]) : undefined;
+  },
+
   async listByFacility(facilityId: number): Promise<SlotRow[]> {
     const { rows } = await getPool().query<SlotResult>(
       `SELECT ${SELECT_COLUMNS} FROM parking_slots

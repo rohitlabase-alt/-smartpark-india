@@ -226,10 +226,13 @@ A "category" booking (e.g., "any 4-wheeler slot") is modeled by grouping slots; 
 | cancel_reason | TEXT NULL | |
 | cancelled_at | TIMESTAMPTZ NULL | |
 | confirmed_at | TIMESTAMPTZ NULL | |
+| verification_token_hash | VARCHAR(64) NULL | SHA-256 digest of the deterministic parking-pass token (`ppk_`) — raw token never stored; partial UNIQUE `WHERE verification_token_hash IS NOT NULL` (migration `0010`) |
 
 Constraint: no overlapping PENDING_PAYMENT/CONFIRMED/ACTIVE reservations on the same slot → enforced via **exclusion constraint** (btree_gist) on `slot_id, [starts_at, ends_at)` `WHERE state IN ('PENDING_PAYMENT','CONFIRMED','ACTIVE')`. This is the primary double-booking guard (migration `0006`).
 
 > **Phase 7 implementation (migrations `0005` + `0006`):** the table is created (migration `0005`, D-034) with the columns above **minus `vehicle_id`** (no `vehicles` table exists yet). Migration `0006` (Phase 7, D-035) activates the payment fields: the `state` CHECK now covers the full vocabulary `('PENDING_PAYMENT','CONFIRMED','ACTIVE','COMPLETED','CANCELLED','EXPIRED','FAILED')` (creates with `PENDING_PAYMENT`, transitions to `CONFIRMED` on a successful mock payment verification, `FAILED` on a failed verification), and `amount` (nullable, `reservations_amount_check`) is populated from the facility pricing JSONB (`hourlyRate`, default ₹100/hr) at creation while `payment_status` tracks the payment outcome. The **live exclusion constraint** is widened to `WHERE state IN ('PENDING_PAYMENT','CONFIRMED','ACTIVE')` so a pending (unpaid) reservation still holds its slot; failed/cancelled/completed reservations release it.
+>
+> **Phase 9, Block 3 (migration `0010`, gate/parking-pass):** adds `verification_token_hash` (NULL until the pass is first needed). Backs the deterministic HS256-JWT parking-pass token (`ppk_...`): the token is derived byte-for-byte from `(user_id, reservation_code, facility_id, ends_at)` + the app secret bound to the reservation's user/facility, so reads never rotate or invalidate a previously-issued pass; `exp` = `ends_at`, so no turnover migration is needed. Only the SHA-256 digest is stored; the partial unique index `reservations_verification_token_hash_idx` rejects a second reservation sharing a digest. Rows created before the migration get their hash lazily backfilled inside the first pass-issue / token-entry transaction (byte-deterministic → backfill never invalidates a pass already handed out).
 
 ### 2.13 parking_sessions
 
@@ -256,6 +259,8 @@ Uniqueness (partial, so the same reservation can have multiple sessions **over t
 Indexes: `(facility_id, status)`, `(user_id)`, `(slot_id)`.
 
 > **Phase 9 Block 1 implementation (migration `0009`, D-037):** table implemented with the columns above. Entry: `POST /parking-sessions/entry` (auth + reservation owner OR VERIFIED facility operator) generates a high-entropy `ses_<48 hex>` bearer token, persists only its SHA-256 hash, transitions reservation `CONFIRMED → ACTIVE`, slot → `OCCUPIED` (guarded UPDATE over `AVAILABLE`/`RESERVED`, race-safe), mirrors the availability cache, and writes a `PARKING_SESSION_ENTRY` audit record — all in one transaction. Exit: `POST /parking-sessions/:id/exit` completes the session (`ACTIVE → COMPLETED`), releases the slot (`OCCUPIED → AVAILABLE`, preserving operator-set statuses), reservation `ACTIVE → COMPLETED`, availability cache re-mirrored, `PARKING_SESSION_EXIT` audit record. `GET /parking-sessions/:id` is owner/operator-scoped (SQL-enforced, 404 on miss). The single-active-session invariants are also enforced at the DB level by the two partial UNIQUE indexes above.
+>
+> **Phase 9 Block 3 (migration `0010`, D-038):** gate entry accepts **exactly one** of `reservationCode` or `verificationToken`; the token path looks up `verification_token_hash` by `sub` (the reservation code), in-tx backfills the digest, verifies it byte-for-byte, and enforces the reservation window (`TOKEN_NOT_YET_VALID`/`TOKEN_EXPIRED`) and the reservation's slot `reservationsEnabled` + `OUT_OF_SERVICE` states. Occupancy now has a **manual guard in the slot UPDATE path** (`slots.service`): a change away from `OCCUPIED` throws `409 SLOT_IN_USE` whenever `hasActiveSessionForSlot` returns true, serialized by `SELECT ... FOR UPDATE` on the slot row — so hand-flipping an active session's slot is impossible, while a genuinely stuck `OCCUPIED` flag (no active session) can still be corrected. Success entry/exit additionally emit `GATE_ENTRY_VERIFIED`/`GATE_EXIT_VERIFIED` (verification mode + `enteredBy` in metadata) plus `SLOT_OCCUPIED`/`SLOT_RELEASED`; rejections write `GATE_ENTRY_REJECTED`/`GATE_EXIT_REJECTED` with the reason code (raw tokens never enter audit metadata).
 
 ### 2.14 parking_tokens
 
@@ -441,6 +446,9 @@ Lifecycle:
 ## 3. Integrity & Concurrency
 
 - **Double-booking guard:** btree_gist exclusion constraint on reservations (slot_id, overlap) restricted to PENDING_PAYMENT/CONFIRMED/ACTIVE states (migration `0006`). Reserve flow uses a transaction: `SELECT ... FOR UPDATE` on slot + insert reservation + update availability.
+- **Single-active-session / single-active-slot:** two partial UNIQUE indexes on parking_sessions (`WHERE status='ACTIVE'` on `reservation_id` and on `slot_id`, migration `0009`) + the guarded slot-UPDATE (`AVAILABLE`/`RESERVED → OCCUPIED`) serialize entry; the loser gets a mapped `409`.
+- **Occupancy manual guard (Block 3, migration `0010`):** slot UPDATE from `OCCUPIED` takes `SELECT ... FOR UPDATE` on the slot row, then `409 SLOT_IN_USE` whenever `hasActiveSessionForSlot` is true — race-free against concurrent entry (whichever side wins the row lock, the other observes the committed outcome).
+- **Token digest uniqueness:** partial UNIQUE `verification_token_hash` on reservations prevents two reservations sharing a parking-pass digest.
 - **Money:** `NUMERIC(12,2)` INR; integer paise decision deferred (see top).
 - **Soft delete** on users, facilities, slots, operators.
 - **FKs** everywhere; `ON DELETE RESTRICT` for financial/history rows.
@@ -453,7 +461,7 @@ Lifecycle:
 - users(email) unique, phone unique
 - parking_facilities(parking_id) unique, (city), (type), (verification_status), geospatial
 - parking_slots(slot_code) unique, (facility_id, status)
-- reservations(reservation_code) unique, (user_id), (facility_id, starts_at), partial (slot_id, state)
+- reservations(reservation_code) unique, (user_id), (facility_id, starts_at), partial (slot_id, state), partial unique (verification_token_hash WHERE NOT NULL) — migration `0010`
 - parking_sessions(entry_token_hash) unique, partial active (reservation_id) / active (slot_id), (facility_id, status), (user_id), (slot_id)
 - parking_tokens(token_id) unique
 - documents(operator_id), (parking_id), (verification_status), (document_id) unique

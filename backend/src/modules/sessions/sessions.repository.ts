@@ -10,6 +10,7 @@
 import type { Pool, PoolClient } from "pg";
 import { createHash, randomBytes } from "node:crypto";
 import type { ParkingSession, ParkingSessionStatus } from "@smartpark/shared";
+import { conflict } from "../../http/errors.js";
 
 export interface ParkingSessionRow {
   id: number;
@@ -84,18 +85,30 @@ const SELECT_COLUMNS_QUALIFIED = `
  * must be the reservation owner (user) or the verified operator who owns the
  * facility. Row-locked (FOR UPDATE OF r) so concurrent entry requests
  * serialize on the same reservation and cannot both observe the pre-entry state.
+ *
+ * Also returns the reservation's time window + stored parking-pass digest —
+ * the token-path entry honors these (TOKEN_NOT_YET_VALID / TOKEN_EXPIRED)
+ * while the reference path intentionally does not (existing tests use
+ * historical windows, docs/API_SPEC.md §2 parking-sessions).
  */
 export async function findReservationForEntry(
   client: PoolClient,
   code: string,
   userId: number,
   operatorId: number | null,
-): Promise<
-  | { id: number; userId: number; facilityId: number; slotId: number | null; state: string }
-  | undefined
-> {
-  const { rows } = await client.query(
-    `SELECT r.id, r.user_id, r.facility_id, r.slot_id, r.state
+): Promise<EntryReservationResult | undefined> {
+  const { rows } = await client.query<{
+    id: string;
+    user_id: string;
+    facility_id: string;
+    slot_id: string | null;
+    state: string;
+    starts_at: Date;
+    ends_at: Date;
+    verification_token_hash: string | null;
+  }>(
+    `SELECT r.id, r.user_id, r.facility_id, r.slot_id, r.state, r.starts_at, r.ends_at,
+            r.verification_token_hash
      FROM reservations r
      LEFT JOIN parking_facilities f ON f.id = r.facility_id AND f.deleted_at IS NULL
      WHERE r.reservation_code = $1
@@ -114,6 +127,70 @@ export async function findReservationForEntry(
     facilityId: Number(rows[0].facility_id),
     slotId: rows[0].slot_id === null ? null : Number(rows[0].slot_id),
     state: rows[0].state as string,
+    startsAt: rows[0].starts_at,
+    endsAt: rows[0].ends_at,
+    verificationTokenHash: rows[0].verification_token_hash,
+  };
+}
+
+export interface EntryReservationResult {
+  id: number;
+  userId: number;
+  facilityId: number;
+  slotId: number | null;
+  state: string;
+  startsAt: Date;
+  endsAt: Date;
+  verificationTokenHash: string | null;
+}
+
+/**
+ * Looks up a reservation by its parking-pass digest (SHA-256), enforcing the
+ * same SQL ownership as every other access path. The unique partial index on
+ * (verification_token_hash) makes this a fast, list-free probe and prevents
+ * token enumeration: a parallel attacker cannot distinguish an unknown digest
+ * from another user's reservation (both surface as the same 404 from the
+ * caller). Row-locked for the entry transaction.
+ */
+export async function findReservationByTokenHash(
+  client: PoolClient,
+  tokenHash: string,
+  userId: number,
+  operatorId: number | null,
+): Promise<EntryReservationResult | undefined> {
+  const { rows } = await client.query<{
+    id: string;
+    user_id: string;
+    facility_id: string;
+    slot_id: string | null;
+    state: string;
+    starts_at: Date;
+    ends_at: Date;
+    verification_token_hash: string | null;
+  }>(
+    `SELECT r.id, r.user_id, r.facility_id, r.slot_id, r.state, r.starts_at, r.ends_at,
+            r.verification_token_hash
+     FROM reservations r
+     LEFT JOIN parking_facilities f ON f.id = r.facility_id AND f.deleted_at IS NULL
+     WHERE r.verification_token_hash = $1
+       AND r.deleted_at IS NULL
+       AND (
+         r.user_id = $2
+         OR ($3::bigint IS NOT NULL AND f.operator_id = $3)
+       )
+     FOR UPDATE OF r`,
+    [tokenHash, userId, operatorId],
+  );
+  if (!rows[0]) return undefined;
+  return {
+    id: Number(rows[0].id),
+    userId: Number(rows[0].user_id),
+    facilityId: Number(rows[0].facility_id),
+    slotId: rows[0].slot_id === null ? null : Number(rows[0].slot_id),
+    state: rows[0].state as string,
+    startsAt: rows[0].starts_at,
+    endsAt: rows[0].ends_at,
+    verificationTokenHash: rows[0].verification_token_hash,
   };
 }
 
@@ -201,9 +278,35 @@ export async function listSessionsForOperator(
 }
 
 /**
+ * Maps the two race-relevant 23505 unique violations on active parking sessions
+ * to the documented deterministic 409s (docs/API_SPEC.md §2 parking-sessions).
+ * The partial unique indexes (active_reservation / active_slot) are the primary
+ * concurrency guard; any other violation rethrows as an internal error.
+ */
+function mapSessionInsertViolation(err: unknown): never {
+  if (err && typeof err === "object" && (err as { code?: string }).code === "23505") {
+    const constraint = (err as { constraint?: string }).constraint;
+    if (constraint === "parking_sessions_active_reservation_idx") {
+      throw conflict(
+        "SESSION_ALREADY_ACTIVE",
+        "A parking session is already active for this reservation",
+      );
+    }
+    if (constraint === "parking_sessions_active_slot_idx") {
+      throw conflict("SLOT_OCCUPIED", "This parking slot is already occupied");
+    }
+    if (constraint === "parking_sessions_entry_token_hash_idx") {
+      throw conflict("ENTRY_TOKEN_CONFLICT", "This entry token has already been used");
+    }
+  }
+  throw err;
+}
+
+/**
  * Inserts a parking session on the given client. The entry_token_hash is the
  * SHA-256 digest of a high-entropy bearer token — the raw token is never
- * stored at rest (docs/DATABASE.md §2.13, docs/SECURITY.md).
+ * stored at rest (docs/DATABASE.md §2.13, docs/SECURITY.md). Concurrent
+ * double-entry is resolved by the DB unique indexes, mapped to clean 409s.
  */
 export async function insertSession(
   client: PoolClient,
@@ -215,14 +318,18 @@ export async function insertSession(
     entryTokenHash: string;
   },
 ): Promise<ParkingSessionRow> {
-  const { rows } = await client.query<ParkingSessionResult>(
-    `INSERT INTO parking_sessions
-       (reservation_id, facility_id, slot_id, user_id, entry_token_hash, status)
-     VALUES ($1, $2, $3, $4, $5, 'ACTIVE')
-     RETURNING ${SELECT_COLUMNS}`,
-    [input.reservationId, input.facilityId, input.slotId, input.userId, input.entryTokenHash],
-  );
-  return mapSession(rows[0]!);
+  try {
+    const { rows } = await client.query<ParkingSessionResult>(
+      `INSERT INTO parking_sessions
+         (reservation_id, facility_id, slot_id, user_id, entry_token_hash, status)
+       VALUES ($1, $2, $3, $4, $5, 'ACTIVE')
+       RETURNING ${SELECT_COLUMNS}`,
+      [input.reservationId, input.facilityId, input.slotId, input.userId, input.entryTokenHash],
+    );
+    return mapSession(rows[0]!);
+  } catch (err) {
+    mapSessionInsertViolation(err);
+  }
 }
 
 /**
@@ -308,6 +415,22 @@ export async function hasActiveSessionForReservation(
   const { rows } = await client.query(
     `SELECT 1 FROM parking_sessions WHERE reservation_id = $1 AND status = 'ACTIVE'`,
     [reservationId],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Checks for an existing ACTIVE session on a slot. Used by the manual
+ * occupancy guard (slots.service): an OCCUPIED slot with a live session must
+ * not be manually flip-flopped away from OCCUPIED (docs/API_SPEC.md §2 slots).
+ */
+export async function hasActiveSessionForSlot(
+  client: PoolClient,
+  slotId: number,
+): Promise<boolean> {
+  const { rows } = await client.query(
+    `SELECT 1 FROM parking_sessions WHERE slot_id = $1 AND status = 'ACTIVE'`,
+    [slotId],
   );
   return rows.length > 0;
 }

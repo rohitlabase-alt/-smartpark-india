@@ -1693,6 +1693,54 @@ describe("operator parking operations", () => {
     );
   });
 
+  it("enters a vehicle using a parking-pass token", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: activeSession, entryToken: "ENTRY-999" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(sessionsResponse([activeSession]));
+    setField("operator-entry-token", "ppk_example-token");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock.mock.calls[5]![0]).toContain("/parking-sessions/entry");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ verificationToken: "ppk_example-token" }),
+    });
+    expect(container.textContent).toContain("Parking pass verified: the session is now active.");
+    expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/sessions");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("clears the booking reference when a parking-pass token is typed", async () => {
+    await renderParkingOps([]);
+    setField("operator-entry-reference", "BKG-ENTRY1");
+    setField("operator-entry-token", "ppk_example-token");
+    expect(container.querySelector<HTMLInputElement>("#operator-entry-reference")?.value).toBe("");
+    expect(container.querySelector<HTMLInputElement>("#operator-entry-token")?.value).toBe(
+      "ppk_example-token",
+    );
+  });
+
+  it("shows a friendly error when the parking-pass token is invalid", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock.mockResolvedValueOnce(reservationError(409, "INVALID_TOKEN", "bad token"));
+    setField("operator-entry-token", "ppk_bogus");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.querySelector(".parking-entry-form [role='alert']")?.textContent).toContain(
+      "This parking pass is invalid or does not match any booking.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
   it("opens an inline exit confirmation and keeps the session when cancelled", async () => {
     const fetchMock = await renderParkingOps([activeSession]);
     await act(async () => buttonWithText("Exit vehicle").click());

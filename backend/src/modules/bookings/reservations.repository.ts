@@ -309,6 +309,40 @@ export const reservationsRepository = {
     return rows[0] ? mapReservation(rows[0]) : undefined;
   },
 
+  /**
+   * Persists the SHA-256 digest of a parking-pass token on a transaction
+   * (Phase 9 Block 3; docs/DATABASE.md §2.12, docs/SECURITY.md). Used at
+   * payment-confirmation time and as a lazy backfill for pre-migration
+   * confirmations whose digest is NULL. The raw token is never written — only
+   * its digest. A 23505 on the unique digest index means the deterministic
+   * pass was already produced for this reservation, so the caller surfaces
+   * the documented TOKEN_ALREADY_USED conflict.
+   */
+  async persistVerificationTokenHash(
+    client: PoolClient,
+    reservationId: number,
+    tokenHash: string,
+  ): Promise<void> {
+    try {
+      await client.query(
+        `UPDATE reservations
+         SET verification_token_hash = $1, updated_at = now()
+         WHERE id = $2 AND deleted_at IS NULL`,
+        [tokenHash, reservationId],
+      );
+    } catch (err) {
+      if (
+        err &&
+        typeof err === "object" &&
+        (err as { code?: string }).code === "23505" &&
+        (err as { constraint?: string }).constraint === "reservations_verification_token_hash_idx"
+      ) {
+        throw conflict("TOKEN_ALREADY_USED", "This parking pass is already in use");
+      }
+      throw err;
+    }
+  },
+
   /** Marks a reservation as FAILED on the given transaction. */
   async markFailed(client: PoolClient, id: number): Promise<ReservationRow | undefined> {
     const { rows } = await client.query<ReservationResult>(

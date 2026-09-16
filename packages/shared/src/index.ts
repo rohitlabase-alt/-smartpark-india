@@ -435,8 +435,27 @@ export interface ParkingSession {
   updatedAt: string;
 }
 
-export interface ParkingSessionEntryRequest {
-  reservationCode: string;
+/**
+ * Entry accepts exactly ONE credential: a booking reference (reservation code)
+ * or a parking-pass verification token (Phase 9 Block 3 gate flow). Client
+ * z-schemas enforce the exclusive-or; a verified token is resolved to the same
+ * reservation entry path as the reference.
+ */
+export type ParkingSessionEntryRequest =
+  { reservationCode: string } | { verificationToken: string };
+
+/**
+ * Parking pass credential (Phase 9 Block 3). A deterministic signed token
+ * (`ppk_<JWT>`) minted from the reservation code + window; it is QR-payload
+ * ready but never stored raw — only its SHA-256 digest is kept at rest.
+ */
+export interface ParkingPass {
+  verificationToken: string;
+}
+
+/** Response envelope for GET /parking-sessions/by-reservation/:code/pass. */
+export interface ParkingPassResponse {
+  verificationToken: string;
 }
 
 export interface ParkingSessionEntryResponse {
@@ -483,6 +502,12 @@ export const AUDIT_ACTIONS = [
   "PAYMENT_VERIFIED",
   "PARKING_SESSION_ENTRY",
   "PARKING_SESSION_EXIT",
+  "GATE_ENTRY_VERIFIED",
+  "GATE_ENTRY_REJECTED",
+  "GATE_EXIT_VERIFIED",
+  "GATE_EXIT_REJECTED",
+  "SLOT_OCCUPIED",
+  "SLOT_RELEASED",
 ] as const;
 export type AuditEventAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -547,6 +572,9 @@ export interface PlatformSummary {
   activeFacilities: number;
   inactiveFacilities: number;
   parkingSlots: number;
+  activeParkingSessions: number;
+  occupiedSlots: number;
+  availableSlots: number;
   reservations: number;
   reservationsByStatus: Record<string, number>;
   payments: number;

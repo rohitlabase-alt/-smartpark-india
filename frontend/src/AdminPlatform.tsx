@@ -33,6 +33,12 @@ const ACTION_LABELS: Record<AuditEventAction, string> = {
   PAYMENT_VERIFIED: "Payment verified",
   PARKING_SESSION_ENTRY: "Parking entry",
   PARKING_SESSION_EXIT: "Parking exit",
+  GATE_ENTRY_VERIFIED: "Gate entry verified",
+  GATE_ENTRY_REJECTED: "Gate entry rejected",
+  GATE_EXIT_VERIFIED: "Gate exit verified",
+  GATE_EXIT_REJECTED: "Gate exit rejected",
+  SLOT_OCCUPIED: "Slot occupied",
+  SLOT_RELEASED: "Slot released",
 };
 
 const PAGE_LIMIT_OPTIONS = [10, 20, 50];
@@ -236,6 +242,18 @@ export default function AdminPlatform({ accessToken, onError }: AdminPlatformPro
               <div className="metric">
                 <span>Inactive facilities</span>
                 <strong>{summary.inactiveFacilities}</strong>
+              </div>
+              <div className="metric">
+                <span>Active sessions</span>
+                <strong>{summary.activeParkingSessions}</strong>
+              </div>
+              <div className="metric">
+                <span>Slots occupied</span>
+                <strong>{summary.occupiedSlots}</strong>
+              </div>
+              <div className="metric">
+                <span>Slots available</span>
+                <strong>{summary.availableSlots}</strong>
               </div>
             </div>
 

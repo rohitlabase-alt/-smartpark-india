@@ -49,6 +49,9 @@ const summary: PlatformSummary = {
   },
   recentAuditEvents: [],
   recentAuditEventCount: 0,
+  activeParkingSessions: 1,
+  occupiedSlots: 1,
+  availableSlots: 11,
 };
 
 const slotEvent: AuditEvent = {
@@ -71,6 +74,17 @@ const approvedEvent: AuditEvent = {
   entityId: 3,
   metadata: {},
   createdAt: "2026-09-09T09:30:00.000Z",
+};
+
+const gateRejectedEvent: AuditEvent = {
+  id: 39,
+  actorUserId: 5,
+  actorEmail: "operator@example.com",
+  action: "GATE_ENTRY_REJECTED",
+  entityType: "RESERVATION",
+  entityId: 601,
+  metadata: { reason: "INVALID_TOKEN" },
+  createdAt: "2026-09-11T08:05:00.000Z",
 };
 
 function summaryResponse(value: PlatformSummary = summary): Response {
@@ -155,7 +169,7 @@ describe("AdminPlatform", () => {
     );
 
     expect(container.textContent).toContain("Platform Overview");
-    expect(container.querySelectorAll(".metric")).toHaveLength(8);
+    expect(container.querySelectorAll(".metric")).toHaveLength(11);
     expect(container.textContent).toContain("Admins & users");
     expect(container.textContent).toContain("Parking slots");
     expect(container.textContent).toContain("2 events");
@@ -192,7 +206,54 @@ describe("AdminPlatform", () => {
     await act(async () => resolveEvents(eventsResponse([])));
     await settle();
     expect(container.textContent).not.toContain("Loading platform overview...");
-    expect(container.querySelectorAll(".metric")).toHaveLength(8);
+    expect(container.querySelectorAll(".metric")).toHaveLength(11);
+  });
+
+  it("renders the live parking-occupancy metrics", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(summaryResponse())
+      .mockResolvedValueOnce(eventsResponse([]));
+    await renderPlatform();
+
+    expect(container.textContent).toContain("Active sessions");
+    expect(container.textContent).toContain("Slots occupied");
+    expect(container.textContent).toContain("Slots available");
+
+    const metrics = Array.from(container.querySelectorAll<HTMLElement>(".metric"));
+    const valueFor = (label: string) =>
+      metrics
+        .find((metric) => metric.querySelector("span")?.textContent === label)
+        ?.querySelector("strong")?.textContent;
+    expect(valueFor("Active sessions")).toBe("1");
+    expect(valueFor("Slots occupied")).toBe("1");
+    expect(valueFor("Slots available")).toBe("11");
+  });
+
+  it("lists the gate verification actions in the audit action filter", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(summaryResponse())
+      .mockResolvedValueOnce(eventsResponse([]));
+    await renderPlatform();
+
+    const select = container.querySelector<HTMLSelectElement>(".audit-filters select")!;
+    const options = Array.from(select.options).map((option) => option.textContent);
+    expect(options).toContain("Gate entry verified");
+    expect(options).toContain("Gate entry rejected");
+    expect(options).toContain("Gate exit verified");
+    expect(options).toContain("Gate exit rejected");
+    expect(options).toContain("Slot occupied");
+    expect(options).toContain("Slot released");
+  });
+
+  it("labels gate rejection events in the audit trail", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(summaryResponse())
+      .mockResolvedValueOnce(eventsResponse([gateRejectedEvent]));
+    await renderPlatform();
+
+    expect(container.textContent).toContain("Gate entry rejected");
+    expect(container.textContent).toContain("operator@example.com");
+    expect(container.textContent).toContain("reservation");
   });
 
   it("shows an empty state when no audit events match", async () => {

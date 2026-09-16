@@ -6,6 +6,7 @@ import {
   exitParking,
   getParkingSession,
   getParkingSessionByReservation,
+  getParkingSessionPass,
   isParkingSession,
 } from "./sessions";
 
@@ -60,7 +61,7 @@ describe("isParkingSession validator", () => {
 });
 
 describe("enterParking API client", () => {
-  it("sends reservation code in the body with bearer token", async () => {
+  it("sends a reservation code in the body with bearer token", async () => {
     const entryToken = "ses_abcdef1234567890abcdef1234567890abcdef12";
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
@@ -68,12 +69,35 @@ describe("enterParking API client", () => {
         new Response(JSON.stringify({ session: activeSession, entryToken }), { status: 201 }),
       );
 
-    const result = await enterParking("access-token", "BKG-ABC123");
+    const result = await enterParking("access-token", { reservationCode: "BKG-ABC123" });
     expect(result.session.status).toBe("ACTIVE");
     expect(result.entryToken).toBe(entryToken);
     expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/parking-sessions/entry`, {
       method: "POST",
       body: JSON.stringify({ reservationCode: "BKG-ABC123" }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Authorization: "Bearer access-token",
+      },
+    });
+  });
+
+  it("sends a parked-pass verification token in the body when provided", async () => {
+    const entryToken = "ses_abcdef1234567890abcdef1234567890abcdef12";
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ session: activeSession, entryToken }), { status: 201 }),
+      );
+
+    const result = await enterParking("access-token", {
+      verificationToken: "ppk_eyJhbGciOiJIUzI1NiJ9.abc.def",
+    });
+    expect(result.session.status).toBe("ACTIVE");
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/parking-sessions/entry`, {
+      method: "POST",
+      body: JSON.stringify({ verificationToken: "ppk_eyJhbGciOiJIUzI1NiJ9.abc.def" }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
@@ -91,11 +115,15 @@ describe("enterParking API client", () => {
       "Reservation is not ready for entry (current state: PENDING_PAYMENT)",
     ],
     [409, "SLOT_OCCUPIED", "This parking slot is already occupied"],
+    [409, "TOKEN_EXPIRED", "This parking pass has expired"],
+    [409, "INVALID_TOKEN", "This parking pass is invalid"],
   ] as const)("surfaces %i %s entry errors", async (status, code, message) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ error: { code, message } }), { status }),
     );
-    await expect(enterParking("access-token", "BKG-ABC123")).rejects.toMatchObject({
+    await expect(
+      enterParking("access-token", { reservationCode: "BKG-ABC123" }),
+    ).rejects.toMatchObject({
       name: "AuthApiError",
       status,
       code,
@@ -107,14 +135,80 @@ describe("enterParking API client", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ session: { id: 1 } }), { status: 201 }),
     );
-    await expect(enterParking("access-token", "BKG-ABC123")).rejects.toThrow(
+    await expect(enterParking("access-token", { reservationCode: "BKG-ABC123" })).rejects.toThrow(
       "incomplete or malformed",
     );
   });
 
   it("surfaces network failures", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
-    await expect(enterParking("access-token", "BKG-ABC123")).rejects.toMatchObject({
+    await expect(
+      enterParking("access-token", { verificationToken: "ppk_x" }),
+    ).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the parking session service.",
+    });
+  });
+});
+
+describe("getParkingSessionPass API client", () => {
+  const pass = { verificationToken: "ppk_eyJhbGciOiJIUzI1NiJ9.abc.def" };
+
+  it("requests the pass by reservation code with bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(pass), { status: 200 }));
+
+    const result = await getParkingSessionPass("access-token", "BKG-ABC123");
+    expect(result.verificationToken).toBe(pass.verificationToken);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE_URL}/parking-sessions/by-reservation/BKG-ABC123/pass`,
+      {
+        headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+      },
+    );
+  });
+
+  it("encodes the reservation code in the path", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(pass), { status: 200 }));
+    await getParkingSessionPass("access-token", "BKG A/B");
+    expect(fetchMock.mock.calls[0]![0]).toContain("/by-reservation/BKG%20A%2FB/pass");
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED", "Authentication required"],
+    [404, "BOOKING_NOT_FOUND", "Booking not found"],
+    [
+      409,
+      "RESERVATION_NOT_ENTRYABLE",
+      "Reservation is not ready for entry (current state: ACTIVE)",
+    ],
+  ] as const)("surfaces %i %s pass errors", async (status, code, message) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code, message } }), { status }),
+    );
+    await expect(getParkingSessionPass("access-token", "BKG-ABC123")).rejects.toMatchObject({
+      name: "AuthApiError",
+      status,
+      code,
+      message,
+    } satisfies Partial<AuthApiError>);
+  });
+
+  it("rejects malformed pass responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ verificationToken: 42 }), { status: 200 }),
+    );
+    await expect(getParkingSessionPass("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it("surfaces network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getParkingSessionPass("access-token", "BKG-ABC123")).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the parking session service.",
     });

@@ -204,11 +204,23 @@ Rule: never overwrite a decision silently (see master prompt §6 change-control,
 
 ---
 
+## D-038 — Phase 9 parking-pass token + gate entry (deterministic `ppk_` JWT, hash-at-rest, occupancy guard)
+
+- **Decision:** Extend Phase 9 Block 1 with a **parking-pass (gate) token**: `GET /parking-sessions/by-reservation/:code/pass` issues `ppk_<HS256 JWT>` and `POST /parking-sessions/entry` accepts **exactly one** of `{ reservationCode }` or `{ verificationToken }` (zod `.strict()`, `400` when both/neither). The pass replaces the still-planned `/gate/tokens/*` set (`API_SPEC.md` §tokens + §4 are marked superseded).
+- **Deterministic token, no turnover.** The JWT is derived byte-for-byte from `(user_id, reservation_code, facility_id, ends_at seconds)` + the app secret (recomputed whenever a pass is requested/verified), has **no `iat`**, `exp = ends_at`, `scope: parking:entry`, `sub = reservationCode`. **Consequence:** re-reading the pass or backfilling a pre-migration row can never invalidate an already-issued pass — there is no rotation/turnover migration, and the database stores only the **SHA-256 digest** (`reservations.verification_token_hash`, NULL → lazily backfilled in-tx, partial UNIQUE `WHERE … IS NOT NULL` rejects digest collisions).
+- **Verification is digest-based, not JWT-secret-based.** An attacker-supplied token is resolved by `sub` → digest row, then compared byte-for-byte against `sha256(token)`; the reservation window (`TOKEN_NOT_YET_VALID` / `TOKEN_EXPIRED`) and slot/facility entryability checks run after the digest match. `sub` must match `^BKG-[0-9A-F]{12}$` (a **digest-format guard** → `INVALID_TOKEN`) so malformed/elongated values never reach DB work and the design doesn't reintroduce a second `iat`-carrying credential. Digest-match failures → `INVALID_TOKEN` (never `404`-style disclosure to the token holder who already knows the reservation).
+- **Occupancy stays single-source.** `parking_slots.status` remains the source of truth; the new **manual-occupancy guard** in the slot UPDATE path takes `SELECT … FOR UPDATE` on the slot row and throws `SLOT_IN_USE` (409) when a change **away from** `OCCUPIED` is attempted while an active session references the slot — race-free against concurrent entry and closing the previous CLI/operator hand-flip hole. Genuinely stuck `OCCUPIED` flags (no active session) stay correctable.
+- **Audit:** successes add `GATE_ENTRY_VERIFIED`/`GATE_EXIT_VERIFIED` + `SLOT_OCCUPIED`/`SLOT_RELEASED` (verification mode + enteredBy in metadata); rejections write `GATE_ENTRY_REJECTED`/`GATE_EXIT_REJECTED` with the mapped error code as `reason`. Raw tokens never appear in audit metadata, logs, or responses beyond the single issuance/entry call.
+- **Deferred:** QR encoding of the pass (clean copyable-token presentation now; QR is a documented next-step integration), standalone `/gate/*` reader contract, session cancellation, operator occupancy reports, IoT integration.
+- **Status:** ACTIVE — verified end-to-end (`gate-verification.integration.test.ts`, 35 DB-backed tests; api 280, web 490, shared 3, iot 3).
+
+---
+
 ## Change log of decisions (reverse chronological)
 
 | Date | Decision | Change | Why | Modules affected | Migration impact |
 |---|---|---|---|---|---|
-| 2026-09-09 | D-037 | Added — Phase 9 parking session entry/exit foundation (single-active-per-reservation partial uniques; one-time `ses_` entry token stored as SHA-256; owner/VERIFIED-operator auth in SQL; atomic audited lifecycle) | Phase 9 (sessions) | sessions (new), bookings, parking, audit, shared | new table (parking_sessions, 0009) |
+| 2026-09-16 | D-038 | Added — Phase 9 parking-pass token (deterministic `ppk_` JWT, SHA-256 digest at rest / partial unique, digest-format guard, exactly-one entry union, manual occupancy guard `SLOT_IN_USE`, gate audit + platform occupancy fields; `/gate/*` superseded) | Phase 9 Block 3 (gate) | sessions, parking (slots), audit, platform, bookings, shared | new column + partial unique index on reservations (0010) |
 | 2026-09-09 | D-036 | Added — Phase 8 admin operator verification (strict review-first workflow; approved_by/approved_at on approve; operational gating via assertVerifiedOperator) | Phase 8 (admin verification) | admin (new), operators, parking (facilities/slots), bookings, shared (no change) | none (no migration) |
 | 2026-09-06 | D-035 | Added — Phase 7 mock payment foundation (PENDING_PAYMENT lifecycle, JSONB hourlyRate pricing, no refunds in mock) | Phase 7 (payments) | bookings, payments, parking (pricing), shared | new tables (payments, transactions, payment_idempotency_keys) + reservations state CHECK/exclusion widen (0006) |
 | 2026-08-31 | D-033 | Added — slots + manual availability foundation (engine output cache, MANUAL source) | Phase 2B (availability) | parking (slots), availability | new tables (parking_zones, parking_slots, availability_state) |
