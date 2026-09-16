@@ -8,6 +8,7 @@ import type {
   OperatorStatus,
   ParkingFacility,
 } from "@smartpark/shared";
+import type { PoolClient } from "pg";
 import { getPool } from "../../db.js";
 
 export interface FacilityRow {
@@ -124,22 +125,26 @@ const SELECT_COLUMNS = `
   created_at, updated_at`;
 
 export const facilitiesRepository = {
-  async create(input: {
-    parkingId: string;
-    operatorId: number;
-    name: string;
-    description: string | null;
-    type: FacilityType;
-    country: string;
-    state: string | null;
-    city: string;
-    area: string | null;
-    address: string | null;
-    latitude: number | null;
-    longitude: number | null;
-    capacity: number;
-  }): Promise<FacilityRow> {
-    const { rows } = await getPool().query<FacilityResult>(
+  async create(
+    input: {
+      parkingId: string;
+      operatorId: number;
+      name: string;
+      description: string | null;
+      type: FacilityType;
+      country: string;
+      state: string | null;
+      city: string;
+      area: string | null;
+      address: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      capacity: number;
+    },
+    client?: PoolClient,
+  ): Promise<FacilityRow> {
+    const target = client ?? getPool();
+    const { rows } = await target.query<FacilityResult>(
       `INSERT INTO parking_facilities (
          parking_id, name, description, type, country, state, city, area, address,
          latitude, longitude, operator_id, capacity, verification_status, availability_mode)
@@ -201,6 +206,7 @@ export const facilitiesRepository = {
       capacity?: number;
       isActive?: boolean;
     },
+    client?: PoolClient,
   ): Promise<FacilityRow | undefined> {
     const sets: Array<[string, unknown]> = [];
     const push = (col: string, val: unknown) => sets.push([col, val]);
@@ -223,7 +229,8 @@ export const facilitiesRepository = {
 
     const assignments = sets.map(([col], i) => `${col} = $${i + 1}`);
     const values = sets.map(([, val]) => val);
-    const { rows } = await getPool().query<FacilityResult>(
+    const target = client ?? getPool();
+    const { rows } = await target.query<FacilityResult>(
       `UPDATE parking_facilities SET ${assignments.join(", ")}, updated_at = now()
        WHERE id = $${values.length + 1} AND deleted_at IS NULL
        RETURNING ${SELECT_COLUMNS}`,
@@ -233,8 +240,9 @@ export const facilitiesRepository = {
   },
 
   /** Next value of the per-facility public-id sequence (e.g. PUN-000001). */
-  async nextParkingSequence(): Promise<number> {
-    const { rows } = await getPool().query<{ n: string }>("SELECT nextval('parking_id_seq') AS n");
+  async nextParkingSequence(client?: PoolClient): Promise<number> {
+    const target = client ?? getPool();
+    const { rows } = await target.query<{ n: string }>("SELECT nextval('parking_id_seq') AS n");
     return Number(rows[0]!.n);
   },
 };

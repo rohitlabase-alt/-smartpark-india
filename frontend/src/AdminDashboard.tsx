@@ -3,10 +3,11 @@ import type { Operator, OperatorStatus } from "@smartpark/shared";
 import { approveOperator, listAdminOperators, rejectOperator, reviewOperator } from "./api/admin";
 import { AuthApiError } from "./api/auth";
 import AdminFacilities from "./AdminFacilities";
+import AdminPlatform from "./AdminPlatform";
 
 type LoadState = "loading" | "success" | "error";
 type Action = "review" | "approve" | "reject";
-type AdminSection = "operators" | "facilities";
+type AdminSection = "operators" | "facilities" | "platform";
 
 const STATUS_TABS: { status: OperatorStatus; label: string }[] = [
   { status: "PENDING", label: "Pending" },
@@ -83,7 +84,11 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
           <h2 id="admin-dashboard-title">Admin Dashboard</h2>
         </div>
         <span className="reservation-count">
-          {section === "operators" ? "Operator verification" : "Facility control"}
+          {section === "operators"
+            ? "Operator verification"
+            : section === "facilities"
+              ? "Facility control"
+              : "Platform analytics"}
         </span>
       </div>
 
@@ -104,6 +109,14 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
         >
           Facilities
         </button>
+        <button
+          type="button"
+          className={section === "platform" ? "admin-section-tab selected" : "admin-section-tab"}
+          aria-pressed={section === "platform"}
+          onClick={() => setSection("platform")}
+        >
+          Platform
+        </button>
       </div>
 
       {section === "operators" ? (
@@ -113,8 +126,10 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
           status={status}
           setStatus={setStatus}
         />
-      ) : (
+      ) : section === "facilities" ? (
         <AdminFacilities accessToken={accessToken} onError={onError} />
+      ) : (
+        <AdminPlatform accessToken={accessToken} onError={onError} />
       )}
     </section>
   );

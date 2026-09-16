@@ -5,6 +5,7 @@
  * action surfaces as a miss rather than an overwrite.
  */
 import type { OperatorStatus } from "@smartpark/shared";
+import type { PoolClient } from "pg";
 import { getPool } from "../../db.js";
 import {
   mapOperator,
@@ -64,7 +65,8 @@ export const adminRepository = {
    * `updated_at`. Approval also records the acting admin identity in
    * `approved_by`/`approved_at` (the only reviewer columns the schema has);
    * review/reject leave those untouched. Returns undefined when the operator
-   * is missing, soft-deleted, or no longer in `fromStatus`.
+   * is missing, soft-deleted, or no longer in `fromStatus`. Runs on the given
+   * client when supplied so the transition joins a caller's transaction.
    */
   async updateVerificationStatus(
     id: number,
@@ -74,8 +76,10 @@ export const adminRepository = {
       approvedBy?: number | null;
       approvedAt?: Date | null;
     },
+    client?: PoolClient,
   ): Promise<OperatorRow | undefined> {
-    const { rows } = await getPool().query<OperatorResult>(
+    const target = client ?? getPool();
+    const { rows } = await target.query<OperatorResult>(
       `UPDATE operators
        SET verification_status = $2,
            updated_at = now(),
@@ -119,6 +123,7 @@ export const adminRepository = {
       approvedAt?: Date | null;
       clearApproval?: boolean;
     },
+    client?: PoolClient,
   ): Promise<FacilityRow | undefined> {
     const setApprovedBy = input.clearApproval
       ? "NULL"
@@ -132,7 +137,8 @@ export const adminRepository = {
         : [id, input.status, input.approvedBy ?? null, input.approvedAt ?? null, input.fromStatus];
     const fromStatusRef = input.clearApproval === true ? "$3" : "$5";
 
-    const { rows } = await getPool().query<FacilityResult>(
+    const target = client ?? getPool();
+    const { rows } = await target.query<FacilityResult>(
       `UPDATE parking_facilities
        SET verification_status = $2,
            ${setApprovedBy.startsWith("NULL") ? "approved_by = NULL," : "approved_by = " + setApprovedBy + ","}
@@ -150,8 +156,13 @@ export const adminRepository = {
    * facilities. Conditional UPDATE with `WHERE is_active = currentActive`
    * returns undefined on concurrent conflict.
    */
-  async updateFacilityActiveStatus(id: number, active: boolean): Promise<FacilityRow | undefined> {
-    const { rows } = await getPool().query<FacilityResult>(
+  async updateFacilityActiveStatus(
+    id: number,
+    active: boolean,
+    client?: PoolClient,
+  ): Promise<FacilityRow | undefined> {
+    const target = client ?? getPool();
+    const { rows } = await target.query<FacilityResult>(
       `UPDATE parking_facilities
        SET is_active = $2, updated_at = now()
        WHERE id = $1 AND is_active = $3

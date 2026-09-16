@@ -18,6 +18,7 @@ import { reservationsRepository, toReservationDto } from "../bookings/reservatio
 import { MockPaymentProvider } from "./providers/mock-payment-provider.js";
 import type { PaymentProvider } from "./providers/payment-provider.js";
 import { paymentsRepository, toPaymentDto } from "./payments.repository.js";
+import { auditService } from "../audit/audit.service.js";
 
 const INITIATE_ENDPOINT = "payments/initiate";
 
@@ -84,6 +85,13 @@ export const paymentsService = {
           paymentId: payment.id,
         });
       }
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "PAYMENT_INITIATED",
+        entityType: "PAYMENT",
+        entityId: payment.id,
+        metadata: { reservationId: reservation.id, amount, provider: initiated.provider },
+      });
       return { payment: toPaymentDto(payment) };
     });
   },
@@ -146,6 +154,13 @@ export const paymentsService = {
           status: "SUCCESS",
           reference: result.reference ?? null,
         });
+        await auditService.createEvent(client, {
+          actorUserId: userId,
+          action: "PAYMENT_VERIFIED",
+          entityType: "PAYMENT",
+          entityId: payment.id,
+          metadata: { reservationId: reservation.id, amount: payment.amount, result: "SUCCESS" },
+        });
         const finalPayment = updatedPayment ?? payment;
         return {
           payment: toPaymentDto(finalPayment),
@@ -163,6 +178,13 @@ export const paymentsService = {
         amount: payment.amount,
         status: "FAILED",
         reference: result.reference ?? null,
+      });
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "PAYMENT_VERIFIED",
+        entityType: "PAYMENT",
+        entityId: payment.id,
+        metadata: { reservationId: reservation.id, amount: payment.amount, result: "FAILED" },
       });
       const failedReservation =
         (await reservationsRepository.findByIdTx(client, reservation.id)) ?? reservation;

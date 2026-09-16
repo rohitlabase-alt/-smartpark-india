@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Operator, ParkingFacility } from "@smartpark/shared";
+import type { Operator, ParkingFacility, AuditEvent, PlatformSummary } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 import {
   activateFacility,
   approveFacility,
   approveOperator,
   deactivateFacility,
+  getPlatformSummary,
   listAdminFacilities,
   listAdminOperators,
+  listAuditEvents,
   rejectFacility,
   rejectOperator,
   reviewFacility,
@@ -419,6 +421,192 @@ describe("facility transition API clients", () => {
   it.each(transitions)("%s maps network failures to the admin service error", async (_, call) => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     await expect(call("access-token", 7)).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the admin service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
+
+describe("audit events list API client", () => {
+  const event: AuditEvent = {
+    id: 41,
+    actorUserId: 1,
+    actorEmail: "admin@smartpark.in",
+    action: "SLOT_CREATED",
+    entityType: "SLOT",
+    entityId: 9,
+    metadata: { slotCode: "A01" },
+    createdAt: "2026-09-10T08:00:00.000Z",
+  };
+
+  function eventsResponse(events: AuditEvent[], page = 1, limit = 20, total = 1): Response {
+    return new Response(JSON.stringify({ events, page, limit, total }), { status: 200 });
+  }
+
+  it("gets audit events with the bearer token using the supplied filters", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(eventsResponse([event]));
+    await expect(
+      listAuditEvents("access-token", {
+        action: "SLOT_CREATED",
+        entityType: "SLOT",
+        page: 2,
+        limit: 20,
+      }),
+    ).resolves.toEqual({ events: [event], page: 1, limit: 20, total: 1 });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      `${API_BASE_URL}/admin/audit-events?action=SLOT_CREATED&entityType=SLOT&page=2&limit=20`,
+    );
+  });
+
+  it("defaults to no query string when no filters are provided", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(eventsResponse([event], 1, 20, 1));
+    await expect(listAuditEvents("access-token")).resolves.toMatchObject({ total: 1 });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`${API_BASE_URL}/admin/audit-events`);
+  });
+
+  it("handles actor and entity id filters", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(eventsResponse([event], 1, 20, 1));
+    await expect(
+      listAuditEvents("access-token", { actorUserId: 1, entityId: 9 }),
+    ).resolves.toMatchObject({ total: 1 });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      `${API_BASE_URL}/admin/audit-events?actorUserId=1&entityId=9`,
+    );
+  });
+
+  it("accepts an empty event list", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(eventsResponse([], 1, 20, 0));
+    await expect(listAuditEvents("access-token", { page: 1 })).resolves.toMatchObject({
+      events: [],
+      total: 0,
+    });
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`${API_BASE_URL}/admin/audit-events?page=1`);
+  });
+
+  it.each([
+    { metadata: { secret: "x" } },
+    { createdAt: null },
+    { action: "NOT_AN_ACTION" },
+    { events: "not-an-array" },
+  ])("rejects malformed response $data", async (patch) => {
+    const malformed = { ...event, ...patch };
+    const payload =
+      typeof patch === "object" && "events" in patch && patch.events === "not-an-array"
+        ? "not-an-array"
+        : [malformed];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ events: payload, page: 1, limit: 20, total: 1 }), {
+        status: 200,
+      }),
+    );
+    await expect(listAuditEvents("access-token")).rejects.toThrow("incomplete or malformed");
+  });
+
+  it.each([
+    [400, "VALIDATION_ERROR"],
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces %i list responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(listAuditEvents("access-token")).rejects.toMatchObject({ status, code });
+  });
+
+  it("maps list network failures to the admin service error", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(listAuditEvents("access-token")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the admin service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
+
+describe("platform summary API client", () => {
+  const summary: PlatformSummary = {
+    users: 5,
+    operators: 3,
+    operatorsByStatus: { PENDING: 1, UNDER_REVIEW: 0, VERIFIED: 2, REJECTED: 0 },
+    facilities: 4,
+    activeFacilities: 3,
+    inactiveFacilities: 1,
+    facilitiesByStatus: { PENDING: 1, UNDER_REVIEW: 0, VERIFIED: 3, REJECTED: 0 },
+    parkingSlots: 12,
+    reservations: 8,
+    reservationsByStatus: {
+      PENDING: 2,
+      CONFIRMED: 3,
+      RESERVED: 0,
+      IN_USE: 1,
+      COMPLETED: 2,
+      CANCELLED: 0,
+    },
+    payments: 6,
+    paymentsByStatus: { PENDING: 2, PAID: 4, REFUNDED: 0, FAILED: 0 },
+    recentAuditEvents: [],
+    recentAuditEventCount: 0,
+  };
+
+  it("gets the platform summary with the bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(summary), { status: 200 }));
+    await expect(getPlatformSummary("access-token")).resolves.toEqual(summary);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/admin/platform-summary`, {
+      headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+    });
+  });
+
+  it("accepts nested recent audit events", async () => {
+    const withEvents = {
+      ...summary,
+      recentAuditEvents: [
+        {
+          id: 1,
+          actorUserId: 1,
+          actorEmail: null,
+          action: "OPERATOR_APPROVED",
+          entityType: "OPERATOR",
+          entityId: 3,
+          metadata: {},
+          createdAt: "2026-09-10T08:00:00.000Z",
+        },
+      ],
+      recentAuditEventCount: 1,
+    } satisfies PlatformSummary;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(withEvents), { status: 200 }),
+    );
+    await expect(getPlatformSummary("access-token")).resolves.toMatchObject({
+      recentAuditEventCount: 1,
+    });
+  });
+
+  it.each([{ users: "5" }, { operatorsByStatus: null }, { recentAuditEvents: "nope" }])(
+    "rejects malformed summary $data",
+    async (patch) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ ...summary, ...patch }), { status: 200 }),
+      );
+      await expect(getPlatformSummary("access-token")).rejects.toThrow("incomplete or malformed");
+    },
+  );
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+    [500, "INTERNAL_ERROR"],
+  ])("surfaces %i summary responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(getPlatformSummary("access-token")).rejects.toMatchObject({ status, code });
+  });
+
+  it("maps summary network failures to the admin service error", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getPlatformSummary("access-token")).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the admin service.",
     } satisfies Partial<AuthApiError>);

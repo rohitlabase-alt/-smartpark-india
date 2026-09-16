@@ -22,6 +22,7 @@ import type { FacilityRow } from "../parking/facilities.repository.js";
 import { facilitiesRepository } from "../parking/facilities.repository.js";
 import { slotsRepository } from "../parking/slots.repository.js";
 import { reservationsRepository, toReservationDto } from "./reservations.repository.js";
+import { auditService } from "../audit/audit.service.js";
 
 /** Slot statuses a booking may occupy (docs/DATABASE.md §2.8). */
 const BOOKABLE_SLOT_STATUSES = new Set(["AVAILABLE", "RESERVED"]);
@@ -129,6 +130,13 @@ export const bookingsService = {
         endsAt: new Date(input.endsAt),
         amount,
       });
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "RESERVATION_CREATED",
+        entityType: "RESERVATION",
+        entityId: created.id,
+        metadata: { facilityId: facility.id, slotId, amount },
+      });
       return { reservation: toReservationDto(created) };
     });
   },
@@ -177,6 +185,17 @@ export const bookingsService = {
       if (!updated) {
         throw notFound("BOOKING_NOT_FOUND", "Booking not found");
       }
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "RESERVATION_CANCELLED",
+        entityType: "RESERVATION",
+        entityId: existing.id,
+        metadata: {
+          facilityId: existing.facilityId,
+          previousState: existing.state,
+          cancelledBy: "CUSTOMER",
+        },
+      });
       return { reservation: toReservationDto(updated) };
     });
   },

@@ -10,9 +10,11 @@ import type {
   UpdateSlotRequest,
 } from "@smartpark/shared";
 import { forbidden, notFound } from "../../http/errors.js";
+import { withTransaction } from "../../db.js";
 import { assertVerifiedOperator } from "../operators/operator-verification.js";
 import { facilitiesRepository } from "./facilities.repository.js";
 import { slotsRepository, toSlotDto } from "./slots.repository.js";
+import { auditService } from "../audit/audit.service.js";
 
 export const slotsService = {
   async createSlot(
@@ -21,14 +23,26 @@ export const slotsService = {
     input: CreateSlotRequest,
   ): Promise<ParkingSlot> {
     await this.assertFacilityOwnership(userId, facilityId);
-    const slot = await slotsRepository.create({
-      slotCode: input.slotCode.trim().toUpperCase(),
-      facilityId,
-      status: input.status ?? "AVAILABLE",
-      vehicleType: input.vehicleType?.trim() || "car",
-      reservationsEnabled: input.reservationsEnabled ?? true,
+    return withTransaction(async (client) => {
+      const slot = await slotsRepository.create(
+        {
+          slotCode: input.slotCode.trim().toUpperCase(),
+          facilityId,
+          status: input.status ?? "AVAILABLE",
+          vehicleType: input.vehicleType?.trim() || "car",
+          reservationsEnabled: input.reservationsEnabled ?? true,
+        },
+        client,
+      );
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "SLOT_CREATED",
+        entityType: "SLOT",
+        entityId: slot.id,
+        metadata: { facilityId, slotCode: slot.slotCode },
+      });
+      return toSlotDto(slot);
     });
-    return toSlotDto(slot);
   },
 
   async listSlots(userId: number, facilityId: number): Promise<ParkingSlot[]> {
@@ -39,24 +53,37 @@ export const slotsService = {
 
   async updateSlot(userId: number, slotId: number, input: UpdateSlotRequest): Promise<ParkingSlot> {
     const operator = await assertVerifiedOperator(userId);
-    const slot = await slotsRepository.findById(slotId);
-    if (!slot) {
-      throw notFound("SLOT_NOT_FOUND", "Parking slot not found");
-    }
-    const facility = await facilitiesRepository.findById(slot.facilityId);
-    if (!facility || facility.operatorId !== operator.id) {
-      throw forbidden("FORBIDDEN", "This slot belongs to a different operator");
-    }
+    return withTransaction(async (client) => {
+      const slot = await slotsRepository.findById(slotId);
+      if (!slot) {
+        throw notFound("SLOT_NOT_FOUND", "Parking slot not found");
+      }
+      const facility = await facilitiesRepository.findById(slot.facilityId);
+      if (!facility || facility.operatorId !== operator.id) {
+        throw forbidden("FORBIDDEN", "This slot belongs to a different operator");
+      }
 
-    const updated = await slotsRepository.update(slotId, {
-      vehicleType: input.vehicleType?.trim(),
-      status: input.status,
-      reservationsEnabled: input.reservationsEnabled,
+      const updated = await slotsRepository.update(
+        slotId,
+        {
+          vehicleType: input.vehicleType?.trim(),
+          status: input.status,
+          reservationsEnabled: input.reservationsEnabled,
+        },
+        client,
+      );
+      if (!updated) {
+        throw notFound("SLOT_NOT_CHANGED", "Nothing to update");
+      }
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "SLOT_UPDATED",
+        entityType: "SLOT",
+        entityId: slotId,
+        metadata: { facilityId: slot.facilityId, updatedFields: Object.keys(input) },
+      });
+      return toSlotDto(updated);
     });
-    if (!updated) {
-      throw notFound("SLOT_NOT_CHANGED", "Nothing to update");
-    }
-    return toSlotDto(updated);
   },
 
   /** Ensures the caller's operator org is VERIFIED and owns the given facility. */

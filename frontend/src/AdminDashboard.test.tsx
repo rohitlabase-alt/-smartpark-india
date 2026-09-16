@@ -1,13 +1,40 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Operator } from "@smartpark/shared";
+import {
+  OPERATOR_STATUSES,
+  PAYMENT_STATUSES,
+  RESERVATION_STATES,
+  type Operator,
+  type PlatformSummary,
+} from "@smartpark/shared";
 import AdminDashboard from "./AdminDashboard";
 import { API_BASE_URL } from "./api/auth";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+function zeroMap<T extends readonly string[]>(keys: T): Record<(typeof keys)[number], number> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as Record<(typeof keys)[number], number>;
+}
+
+const emptySummary: PlatformSummary = {
+  users: 1,
+  operators: 0,
+  operatorsByStatus: zeroMap(OPERATOR_STATUSES),
+  facilities: 0,
+  activeFacilities: 0,
+  inactiveFacilities: 0,
+  facilitiesByStatus: zeroMap(OPERATOR_STATUSES),
+  parkingSlots: 0,
+  reservations: 0,
+  reservationsByStatus: zeroMap(RESERVATION_STATES),
+  payments: 0,
+  paymentsByStatus: zeroMap(PAYMENT_STATUSES),
+  recentAuditEvents: [],
+  recentAuditEventCount: 0,
+};
 
 const pendingOperator: Operator = {
   id: 3,
@@ -408,5 +435,52 @@ describe("AdminDashboard", () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(operatorCard("Baner Lots")).toBeTruthy();
+  });
+
+  it("opens the Platform section and loads the platform analytics", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
+      .mockResolvedValueOnce(new Response(JSON.stringify(emptySummary), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ events: [], page: 1, limit: 20, total: 0 }), { status: 200 }),
+      );
+    await renderDashboard();
+
+    expect(container.textContent).toContain("Operator verification");
+    expect(buttonWithText("Platform")).toBeTruthy();
+
+    await act(async () => buttonWithText("Platform").click());
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1]![0]).toBe(`${API_BASE_URL}/admin/platform-summary`);
+    expect(String(fetchMock.mock.calls[2]![0])).toBe(
+      `${API_BASE_URL}/admin/audit-events?page=1&limit=20`,
+    );
+    expect(container.textContent).toContain("Platform analytics");
+    expect(container.textContent).toContain("Platform Overview");
+    expect(container.querySelectorAll(".metric")).toHaveLength(8);
+  });
+
+  it("returns to the operators section without refetching analytics", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
+      .mockResolvedValueOnce(new Response(JSON.stringify(emptySummary), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ events: [], page: 1, limit: 20, total: 0 }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(operatorsResponse([pendingOperator]));
+    await renderDashboard();
+
+    await act(async () => buttonWithText("Platform").click());
+    await settle();
+    await act(async () => buttonWithText("Operators").click());
+    await settle();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[3]![0]).toBe(`${API_BASE_URL}/admin/operators?status=PENDING`);
+    expect(container.textContent).toContain("Operator verification");
   });
 });

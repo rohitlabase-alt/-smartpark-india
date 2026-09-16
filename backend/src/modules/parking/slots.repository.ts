@@ -85,34 +85,26 @@ export function toEngineState(slotStatus: ParkingSlotStatus): AvailabilityState 
 }
 
 export const slotsRepository = {
-  async create(input: {
-    slotCode: string;
-    facilityId: number;
-    status: ParkingSlotStatus;
-    vehicleType: string;
-    reservationsEnabled: boolean;
-  }): Promise<SlotRow> {
+  /**
+   * Creates a slot and seeds its availability_state cache row atomically on
+   * the given client when supplied (so the caller's transaction also carries
+   * the audit write), otherwise in its own transaction.
+   */
+  async create(
+    input: {
+      slotCode: string;
+      facilityId: number;
+      status: ParkingSlotStatus;
+      vehicleType: string;
+      reservationsEnabled: boolean;
+    },
+    client?: PoolClient,
+  ): Promise<SlotRow> {
     try {
-      return await withTransaction(async (client) => {
-        const { rows } = await client.query<SlotResult>(
-          `INSERT INTO parking_slots (slot_code, facility_id, status, vehicle_type, reservations_enabled)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING ${SELECT_COLUMNS}`,
-          [
-            input.slotCode,
-            input.facilityId,
-            input.status,
-            input.vehicleType,
-            input.reservationsEnabled,
-          ],
-        );
-        const slot = mapSlot(rows[0]!);
-        // Seed the engine output cache so newly created (default AVAILABLE)
-        // slots are counted in the public availability read (docs/DATABASE.md
-        // §2.20) — keeps availability_state in sync on create, not just update.
-        await upsertEngineState(client, slot.facilityId, slot.id, slot.status);
-        return slot;
-      });
+      if (client) {
+        return await insertSlot(client, input);
+      }
+      return await withTransaction((c) => insertSlot(c, input));
     } catch (err) {
       mapSlotCodeViolation(err);
     }
@@ -138,11 +130,13 @@ export const slotsRepository = {
 
   /**
    * Partial update of mutable slot fields + syncs the availability_state
-   * engine cache row for the slot in one transaction (source=MANUAL).
+   * engine cache row for the slot in one transaction (source=MANUAL). Accepts
+   * a caller's client so the same transaction can carry the audit write.
    */
   async update(
     id: number,
     fields: { vehicleType?: string; status?: ParkingSlotStatus; reservationsEnabled?: boolean },
+    client?: PoolClient,
   ): Promise<SlotRow | undefined> {
     const sets: Array<[string, unknown]> = [];
     if (fields.vehicleType !== undefined) sets.push(["vehicle_type", fields.vehicleType]);
@@ -154,26 +148,58 @@ export const slotsRepository = {
       return undefined;
     }
 
-    return withTransaction(async (client) => {
-      const assignments = sets.map(([col], i) => `${col} = $${i + 1}`);
-      const values = sets.map(([, val]) => val);
-      const { rows } = await client.query<SlotResult>(
-        `UPDATE parking_slots SET ${assignments.join(", ")}, updated_at = now()
-         WHERE id = $${values.length + 1} AND deleted_at IS NULL
-         RETURNING ${SELECT_COLUMNS}`,
-        [...values, id],
-      );
-      if (!rows[0]) return undefined;
-      const slot = mapSlot(rows[0]);
-
-      // Mirror the slot's operational status into the engine output cache
-      // (docs/DATABASE.md §2.20) with source=MANUAL.
-      await upsertEngineState(client, slot.facilityId, slot.id, slot.status);
-
-      return slot;
-    });
+    if (client) {
+      return updateSlotOn(client, id, sets);
+    }
+    return withTransaction((c) => updateSlotOn(c, id, sets));
   },
 };
+
+async function insertSlot(
+  client: PoolClient,
+  input: {
+    slotCode: string;
+    facilityId: number;
+    status: ParkingSlotStatus;
+    vehicleType: string;
+    reservationsEnabled: boolean;
+  },
+): Promise<SlotRow> {
+  const { rows } = await client.query<SlotResult>(
+    `INSERT INTO parking_slots (slot_code, facility_id, status, vehicle_type, reservations_enabled)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING ${SELECT_COLUMNS}`,
+    [input.slotCode, input.facilityId, input.status, input.vehicleType, input.reservationsEnabled],
+  );
+  const slot = mapSlot(rows[0]!);
+  // Seed the engine output cache so newly created (default AVAILABLE) slots are
+  // counted in the public availability read (docs/DATABASE.md §2.20).
+  await upsertEngineState(client, slot.facilityId, slot.id, slot.status);
+  return slot;
+}
+
+async function updateSlotOn(
+  client: PoolClient,
+  id: number,
+  sets: Array<[string, unknown]>,
+): Promise<SlotRow | undefined> {
+  const assignments = sets.map(([col], i) => `${col} = $${i + 1}`);
+  const values = sets.map(([, val]) => val);
+  const { rows } = await client.query<SlotResult>(
+    `UPDATE parking_slots SET ${assignments.join(", ")}, updated_at = now()
+     WHERE id = $${values.length + 1} AND deleted_at IS NULL
+     RETURNING ${SELECT_COLUMNS}`,
+    [...values, id],
+  );
+  if (!rows[0]) return undefined;
+  const slot = mapSlot(rows[0]);
+
+  // Mirror the slot's operational status into the engine output cache
+  // (docs/DATABASE.md §2.20) with source=MANUAL.
+  await upsertEngineState(client, slot.facilityId, slot.id, slot.status);
+
+  return slot;
+}
 
 /** Upserts the normalized engine cache row for one slot (docs/DATABASE.md §2.20). */
 export async function upsertEngineState(

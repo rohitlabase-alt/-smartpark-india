@@ -16,6 +16,7 @@ import { withTransaction } from "../../db.js";
 import { operatorsRepository, toOperatorDto } from "./operators.repository.js";
 import { assertVerifiedOperator } from "./operator-verification.js";
 import { reservationsRepository, toReservationDto } from "../bookings/reservations.repository.js";
+import { auditService } from "../audit/audit.service.js";
 
 export const operatorsService = {
   async registerOperator(userId: number, input: OperatorRegisterRequest): Promise<Operator> {
@@ -27,6 +28,13 @@ export const operatorsService = {
         registrationNumber: input.registrationNumber?.trim() ?? null,
       });
       await assignRole(userId, "PARKING_OPERATOR", client);
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "OPERATOR_REGISTERED",
+        entityType: "OPERATOR",
+        entityId: created.id,
+        metadata: { operatorName: created.name },
+      });
       return created;
     });
     return toOperatorDto(operator);
@@ -82,6 +90,17 @@ export const operatorsService = {
       if (!updated) {
         throw notFound("BOOKING_NOT_FOUND", "Booking not found");
       }
+      await auditService.createEvent(client, {
+        actorUserId: userId,
+        action: "RESERVATION_CANCELLED",
+        entityType: "RESERVATION",
+        entityId: existing.id,
+        metadata: {
+          facilityId: existing.facilityId,
+          previousState: existing.state,
+          cancelledBy: "OPERATOR",
+        },
+      });
       return { reservation: toReservationDto(updated) };
     });
   },

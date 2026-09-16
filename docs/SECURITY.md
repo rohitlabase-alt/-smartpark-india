@@ -79,8 +79,8 @@ Roles: `USER, GATE_STAFF, PARKING_OPERATOR, OPERATOR_MANAGER, VERIFIER, ADMIN`.
 ## 5. Logging & Audit
 
 - Request IDs, structured logs, no PII-in-excess (minimize: log identifiers only as needed).
-- `audit_logs` append-only; sensitive actions logged (approvals, overrides, role changes, refunds, suspensions).
-- Operator approve records the acting admin (`operators.approved_by` + `approved_at`). Known Phase 8 gap: `review` does not yet record the reviewer and `reject` does not yet persist a reason (`reviewed_by`/`rejection_reason` columns don't exist yet — see `DECISIONS.md` D-036).
+- `audit_events` append-only (migration 0008, `DATABASE.md` §2.23); sensitive transitions log an event **inside the same DB transaction** as the mutation — approvals, reviews, rejects, facility activate/deactivate, operator registration, facility/slot CRUD, reservation create/cancel, payment initiate/verify. No application path updates or deletes audit rows and there is no audit-write API (ADMIN-only read).
+- Actor identity is the server-side session user (`audit_events.actor_user_id`), surfaced as actor email only through the ADMIN-only audit API; `metadata` is sanitized server-side so credentials/tokens/secrets are never persisted. Operator approve additionally records the acting admin (`operators.approved_by` + `approved_at`). The Phase 8 gap that `review` records no reviewer identity and `reject` no reason (`reviewed_by`/`rejection_reason` columns don't exist — `DECISIONS.md` D-036) is now mitigated by the per-transition audit event; the columns remain unadded.
 - No secrets in logs (redaction on serialize).
 
 ## 6. Secret Management

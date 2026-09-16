@@ -414,3 +414,102 @@ export interface VerifyPaymentResponse {
   payment: Payment;
   reservation: Reservation;
 }
+
+// ---------------------------------------------------------------------------
+// Audit trail (docs/DATABASE.md §2.23, docs/API_SPEC.md §2 admin — Phase 8,
+// Part 4). Audit events are server-generated, append-only records of admin and
+// platform actions. actors come from the authenticated server-side session.
+// ---------------------------------------------------------------------------
+
+/**
+ * Documented audit event vocabulary. Only actions that actually exist in the
+ * current workflows are emitted (Phase 8 Part 4).
+ */
+export const AUDIT_ACTIONS = [
+  "OPERATOR_REVIEWED",
+  "OPERATOR_APPROVED",
+  "OPERATOR_REJECTED",
+  "OPERATOR_REGISTERED",
+  "FACILITY_REVIEWED",
+  "FACILITY_APPROVED",
+  "FACILITY_REJECTED",
+  "FACILITY_ACTIVATED",
+  "FACILITY_DEACTIVATED",
+  "FACILITY_CREATED",
+  "FACILITY_UPDATED",
+  "SLOT_CREATED",
+  "SLOT_UPDATED",
+  "RESERVATION_CREATED",
+  "RESERVATION_CANCELLED",
+  "PAYMENT_INITIATED",
+  "PAYMENT_VERIFIED",
+] as const;
+export type AuditEventAction = (typeof AUDIT_ACTIONS)[number];
+
+/** Entity kinds that audit events reference (docs/DATABASE.md §2.23). */
+export const AUDIT_ENTITY_TYPES = [
+  "OPERATOR",
+  "FACILITY",
+  "SLOT",
+  "RESERVATION",
+  "PAYMENT",
+  "USER",
+] as const;
+export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
+
+/**
+ * An audit event. `actorEmail` is resolved server-side from the actor's
+ * account at read time and only ever surfaced through the ADMIN-only API.
+ */
+export interface AuditEvent {
+  id: number;
+  actorUserId: number | null;
+  actorEmail: string | null;
+  action: AuditEventAction;
+  entityType: AuditEntityType;
+  entityId: number | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Filter options accepted by GET /api/v1/admin/audit-events. */
+export interface AuditEventFilters {
+  action?: AuditEventAction;
+  entityType?: AuditEntityType;
+  actorUserId?: number;
+  entityId?: number;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
+}
+
+/** Response envelope for GET /api/v1/admin/audit-events. */
+export interface AuditEventListResponse {
+  events: AuditEvent[];
+  page: number;
+  limit: number;
+  total: number;
+}
+
+/**
+ * Platform dashboard summary (GET /api/v1/admin/platform-summary). Aggregated
+ * counts only — no user PII is exposed. Status breakdown keys use the existing
+ * §2 vocabularies (OperatorStatus / ReservationState / PaymentStatus).
+ */
+export interface PlatformSummary {
+  users: number;
+  operators: number;
+  operatorsByStatus: Record<string, number>;
+  facilities: number;
+  facilitiesByStatus: Record<string, number>;
+  activeFacilities: number;
+  inactiveFacilities: number;
+  parkingSlots: number;
+  reservations: number;
+  reservationsByStatus: Record<string, number>;
+  payments: number;
+  paymentsByStatus: Record<string, number>;
+  recentAuditEventCount: number;
+  recentAuditEvents: AuditEvent[];
+}

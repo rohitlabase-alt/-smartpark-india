@@ -12,6 +12,8 @@ import { badRequest, notFound } from "../../http/errors.js";
 import type { AuthenticatedRequest } from "../../http/context.js";
 import { requireAuth, requireRole } from "../../middleware/auth.js";
 import { adminService } from "./admin.service.js";
+import { auditRouter } from "../audit/audit.routes.js";
+import { platformRouter } from "../platform/platform.routes.js";
 
 const ADMIN_ROUTES = requireRole("ADMIN");
 
@@ -61,8 +63,10 @@ adminRouter.get(
 
 adminRouter.post(
   "/operators/:operatorId/review",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.reviewOperator(parseOperatorId(req.params.operatorId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.reviewOperator(req.auth.userId, parseOperatorId(req.params.operatorId)),
+    );
   }),
 );
 
@@ -77,8 +81,10 @@ adminRouter.post(
 
 adminRouter.post(
   "/operators/:operatorId/reject",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.rejectOperator(parseOperatorId(req.params.operatorId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.rejectOperator(req.auth.userId, parseOperatorId(req.params.operatorId)),
+    );
   }),
 );
 
@@ -94,8 +100,10 @@ adminRouter.get(
 
 adminRouter.post(
   "/facilities/:facilityId/review",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.reviewFacility(parseFacilityId(req.params.facilityId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.reviewFacility(req.auth.userId, parseFacilityId(req.params.facilityId)),
+    );
   }),
 );
 
@@ -110,21 +118,36 @@ adminRouter.post(
 
 adminRouter.post(
   "/facilities/:facilityId/reject",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.rejectFacility(parseFacilityId(req.params.facilityId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.rejectFacility(req.auth.userId, parseFacilityId(req.params.facilityId)),
+    );
   }),
 );
 
 adminRouter.post(
   "/facilities/:facilityId/activate",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.activateFacility(parseFacilityId(req.params.facilityId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.activateFacility(req.auth.userId, parseFacilityId(req.params.facilityId)),
+    );
   }),
 );
 
 adminRouter.post(
   "/facilities/:facilityId/deactivate",
-  asyncHandler(async (req, res) => {
-    res.json(await adminService.deactivateFacility(parseFacilityId(req.params.facilityId)));
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(
+      await adminService.deactivateFacility(
+        req.auth.userId,
+        parseFacilityId(req.params.facilityId),
+      ),
+    );
   }),
 );
+
+// ── Platform dashboard + audit trail (Phase 8, Part 4) ─────────────────────
+// Read-only admin routes; guards (requireAuth + ADMIN role) already applied
+// above. There is no audit-write route — the trail is server-generated.
+adminRouter.use(auditRouter);
+adminRouter.use(platformRouter);

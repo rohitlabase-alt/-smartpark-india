@@ -53,7 +53,7 @@ operators 1──n documents
 parking_facilities 1──n documents    (operator verification docs / parking images)
 
 users 1──n notifications
-audit_logs reference arbitrary entities via (table_name, record_id)
+audit_events reference arbitrary entities via (entity_type, entity_id)
 ```
 
 ---
@@ -370,19 +370,21 @@ This table is the normalized output the API/WS actually serves.
 | status | VARCHAR(16) | queued/sent/failed |
 | sent_at | TIMESTAMPTZ NULL | |
 
-### 2.23 audit_logs
+### 2.23 audit_events
+
+Append-only audit trail of admin/operator/user/payment actions (Phase 8, Part 4; migration 0008). Rows are written by application code **inside the same transaction** as the business mutation so a mutation can never commit without its audit record; no application path updates or deletes rows (`updated_at` is deliberately omitted — the append-only contract). Actor identity comes from the server-side session; `metadata` is sanitized by the service (credential-like keys dropped).
 
 | column | type | notes |
 |---|---|---|
 | id | BIGSERIAL PK | |
-| actor_user_id FK NULL | | |
-| action | VARCHAR(64) | e.g., operator.approved |
-| entity_type | VARCHAR(64) | table/entity name |
-| entity_id | BIGINT | |
-| before / after | JSONB NULL | diff snapshot |
-| ip | INET NULL | |
-| user_agent | TEXT NULL | |
-| created_at | TIMESTAMPTZ | append-only (no UPDATE/DELETE grants) |
+| actor_user_id FK NULL | | acting user from the server-side session; NULL for system events |
+| action | VARCHAR(64) | shared `AUDIT_ACTIONS` vocabulary, e.g., `OPERATOR_APPROVED`, `RESERVATION_CANCELLED` |
+| entity_type | VARCHAR(64) | shared `AUDIT_ENTITY_TYPES` vocabulary, e.g., OPERATOR/FACILITY/SLOT/RESERVATION/PAYMENT/USER |
+| entity_id | BIGINT NULL | entity the action touched |
+| metadata | JSONB | sanitized, JSON-safe context; no credentials/PII |
+| created_at | TIMESTAMPTZ | default now(); append-only |
+
+Indexes: `(created_at DESC)`, `(actor_user_id, created_at DESC)`, `(entity_type, entity_id, created_at DESC)`, `(action, created_at DESC)`.
 
 ### 2.24 documents
 
@@ -444,7 +446,7 @@ Lifecycle:
 - documents(operator_id), (parking_id), (verification_status), (document_id) unique
 - bookings ONLOOKUP: partial indexes for pending payment cleanup
 - iot_readings(device_id, received_at DESC)
-- audit_logs(entity_type, entity_id), (created_at DESC)
+- audit_events(created_at DESC), (actor_user_id, created_at DESC), (entity_type, entity_id, created_at DESC), (action, created_at DESC)
 
 ---
 

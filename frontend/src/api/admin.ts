@@ -1,8 +1,15 @@
 import {
+  AUDIT_ACTIONS,
+  AUDIT_ENTITY_TYPES,
   OPERATOR_STATUSES,
+  type AuditEvent,
+  type AuditEventAction,
+  type AuditEntityType,
+  type AuditEventListResponse,
   type Operator,
   type OperatorStatus,
   type ParkingFacility,
+  type PlatformSummary,
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 import { isFacility } from "./operators";
@@ -15,6 +22,17 @@ export interface AdminOperatorListResponse {
 /** Wire shape of GET /api/v1/admin/facilities (docs/API_SPEC.md §2 admin). */
 export interface AdminFacilityListResponse {
   facilities: ParkingFacility[];
+}
+
+export interface AuditEventListParams {
+  action?: AuditEventAction;
+  entityType?: AuditEntityType;
+  actorUserId?: number;
+  entityId?: number;
+  from?: string;
+  to?: string;
+  page?: number;
+  limit?: number;
 }
 
 function isOperator(value: unknown): value is Operator {
@@ -47,6 +65,73 @@ function isAdminFacilityListResponse(value: unknown): value is AdminFacilityList
     typeof value === "object" &&
     Array.isArray((value as { facilities?: unknown }).facilities) &&
     (value as { facilities: unknown[] }).facilities.every(isFacility)
+  );
+}
+
+function hasSensitiveMetadataKey(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const sensitiveKey =
+    /password|passwd|secret|token|credential|authorization|api[-_]?key|private[-_]?key|otp|cvv|pin|signature/i;
+  return Object.keys(metadata).some((key) => sensitiveKey.test(key));
+}
+
+function isAuditEvent(value: unknown): value is AuditEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<AuditEvent>;
+  return (
+    typeof event.id === "number" &&
+    (event.actorUserId === null || typeof event.actorUserId === "number") &&
+    (event.actorEmail === null || typeof event.actorEmail === "string") &&
+    typeof event.action === "string" &&
+    AUDIT_ACTIONS.includes(event.action) &&
+    typeof event.entityType === "string" &&
+    AUDIT_ENTITY_TYPES.includes(event.entityType) &&
+    (event.entityId === null || typeof event.entityId === "number") &&
+    !!event.metadata &&
+    typeof event.metadata === "object" &&
+    !hasSensitiveMetadataKey(event.metadata) &&
+    typeof event.createdAt === "string"
+  );
+}
+
+function isAuditEventListResponse(value: unknown): value is AuditEventListResponse {
+  if (!value || typeof value !== "object") return false;
+  const response = value as Partial<AuditEventListResponse>;
+  return (
+    Array.isArray(response.events) &&
+    response.events.every(isAuditEvent) &&
+    typeof response.page === "number" &&
+    typeof response.limit === "number" &&
+    typeof response.total === "number"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, number> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPlatformSummary(value: unknown): value is PlatformSummary {
+  if (!value || typeof value !== "object") return false;
+  const summary = value as Partial<PlatformSummary>;
+  const numeric = [
+    summary.users,
+    summary.operators,
+    summary.facilities,
+    summary.activeFacilities,
+    summary.inactiveFacilities,
+    summary.parkingSlots,
+    summary.reservations,
+    summary.payments,
+    summary.recentAuditEventCount,
+  ];
+  return (
+    numeric.every((n) => typeof n === "number") &&
+    isRecord(summary.operatorsByStatus) &&
+    isRecord(summary.facilitiesByStatus) &&
+    isRecord(summary.reservationsByStatus) &&
+    isRecord(summary.paymentsByStatus) &&
+    Array.isArray(summary.recentAuditEvents) &&
+    summary.recentAuditEvents.every(isAuditEvent)
   );
 }
 
@@ -208,4 +293,36 @@ export function deactivateFacility(
   facilityId: number,
 ): Promise<ParkingFacility> {
   return transitionFacility(accessToken, facilityId, "deactivate");
+}
+
+/**
+ * GET /api/v1/admin/audit-events — newest-first audit trail, newest-first.
+ * Builds query params only from the filters that were actually provided.
+ */
+export async function listAuditEvents(
+  accessToken: string,
+  filters: AuditEventListParams = {},
+): Promise<AuditEventListResponse> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const query = params.toString();
+  const body = await request(`/admin/audit-events${query ? `?${query}` : ""}`, accessToken);
+  if (!isAuditEventListResponse(body)) {
+    throw new AuthApiError("The audit events response was incomplete or malformed.");
+  }
+  return body;
+}
+
+/**
+ * GET /api/v1/admin/platform-summary — aggregate platform counts plus a bounded
+ * slice of the newest audit events. Admin-only.
+ */
+export async function getPlatformSummary(accessToken: string): Promise<PlatformSummary> {
+  const body = await request("/admin/platform-summary", accessToken);
+  if (!isPlatformSummary(body)) {
+    throw new AuthApiError("The platform summary response was incomplete or malformed.");
+  }
+  return body;
 }

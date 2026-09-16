@@ -136,14 +136,21 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 | POST | /admin/operators/{id}/approve | admin | approve (UNDER_REVIEW → VERIFIED) |
 | POST | /admin/operators/{id}/reject | admin | reject (UNDER_REVIEW → REJECTED) |
 | POST | /admin/operators/{id}/suspend | admin | suspend *(deferred — no VERIFIED→SUSPENDED yet)* |
-| GET | /admin/facilities | admin | facility list *(deferred)* |
-| POST | /admin/facilities/{id}/approve | verifier/admin | approve/verify *(deferred)* |
+| GET | /admin/facilities | admin | facility list (filter by `?status`, default `PENDING`) |
+| POST | /admin/facilities/{id}/review | admin | START review (PENDING → UNDER_REVIEW) |
+| POST | /admin/facilities/{id}/approve | admin | approve (UNDER_REVIEW → VERIFIED) |
+| POST | /admin/facilities/{id}/reject | admin | reject (UNDER_REVIEW → REJECTED) |
+| POST | /admin/facilities/{id}/activate | admin | activate (VERIFIED → ACTIVE) |
+| POST | /admin/facilities/{id}/deactivate | admin | deactivate (VERIFIED → INACTIVE) |
+| GET | /admin/audit-events | admin | audit trail query (newest-first; filters + pagination) |
+| GET | /admin/platform-summary | admin | platform dashboard aggregates + newest audit events |
 | GET | /admin/users | admin | user management *(deferred)* |
 | PATCH | /admin/users/{id}/status | admin | suspend/activate *(deferred)* |
 | GET | /admin/reservations | admin | monitor reservations *(deferred)* |
-| GET | /admin/audit-logs | admin | audit log query *(deferred)* |
 
-> **Implementation status (Phase 8, Part 1 — operator verification):** the four `admin` operator endpoints are **implemented** (mounted at `/api/v1/admin`, authenticated **and** `ADMIN` role enforced server-side via `requireAuth` + `requireRole("ADMIN")`). The workflow is strict and sequential — `GET /admin/operators?status=` lists by the shared `OPERATOR_STATUSES` vocabulary (invalid filter → `400 VALIDATION_ERROR`); `POST /{id}/review` moves `PENDING → UNDER_REVIEW`; `POST /{id}/approve` records the admin as `approved_by` with `approved_at` only from `UNDER_REVIEW → VERIFIED`; `POST /{id}/reject` moves `UNDER_REVIEW → REJECTED`. Any transition from the wrong source state → `409 OPERATOR_STATUS_CONFLICT`; unknown/non-numeric ids → `404 OPERATOR_NOT_FOUND`; non-admin sessions → `403 FORBIDDEN`. Verification gating: only `VERIFIED` operators may create/list/update facilities, create/list/update slots, or use `GET /operators/me/reservations` / cancel via the operator flow (PENDING/UNDER_REVIEW/REJECTED → `403 OPERATOR_NOT_VERIFIED`); registration and `GET /operators/me` stay open. Review does **not** record a reviewer identity and reject does **not** persist a reason (schema has only `approved_by`/`approved_at` — see `DECISIONS.md` D-036).
+> **Implementation status (Phase 8 — admin):** the operator and facility endpoints plus the audit trail and platform dashboard are **implemented** (mounted at `/api/v1/admin`, authenticated **and** `ADMIN` role enforced server-side via `requireAuth` + `requireRole("ADMIN")`). Operator workflow is strict and sequential — `GET /admin/operators?status=` lists by the shared `OPERATOR_STATUSES` vocabulary (invalid filter → `400 VALIDATION_ERROR`); `POST /{id}/review` moves `PENDING → UNDER_REVIEW`; `POST /{id}/approve` records the admin as `approved_by` with `approved_at` only from `UNDER_REVIEW → VERIFIED`; `POST /{id}/reject` moves `UNDER_REVIEW → REJECTED`. Facility workflow mirrors it (`PENDING → UNDER_REVIEW → VERIFIED | REJECTED`), plus `POST /{id}/activate` / `POST /{id}/deactivate` toggles (VERIFIED only). Any transition from the wrong source state → `409 <ENTITY>_STATUS_CONFLICT`; unknown/non-numeric ids → `404 <ENTITY>_NOT_FOUND`; non-admin sessions → `403 FORBIDDEN`. Verification gating: only `VERIFIED` operators may create/list/update facilities, create/list/update slots, or use `GET /operators/me/reservations` / cancel via the operator flow (PENDING/UNDER_REVIEW/REJECTED → `403 OPERATOR_NOT_VERIFIED`); registration and `GET /operators/me` stay open. Review does **not** record a reviewer identity and reject does **not** persist a reason (schema has only `approved_by`/`approved_at` — see `DECISIONS.md` D-036).
+>
+> **Phase 8, Part 4 — audit trail + platform dashboard:** `GET /admin/audit-events` returns the append-only audit trail newest-first with optional `action`/`entityType`/`actorUserId`/`entityId`/`from`/`to` filters and `page`/`limit` pagination (`{ events, page, limit, total }`; invalid vocabulary/date/non-numeric filter → `400 VALIDATION_ERROR`). `GET /admin/platform-summary` returns aggregate counts + status breakdowns by the existing vocabularies + the 10 newest audit events (`recentAuditEvents`); deliberately no user PII. Audit events are **server-generated** inside the same transaction as the underlying mutation — there is no audit-write endpoint (reads only, `docs/SECURITY.md` §5).
 
 ### documents
 Metadata lives in the DB; binary lives in private S3-compatible object storage. **Private storage is never exposed directly** — clients get metadata via API and short-lived signed URLs only (`ARCHITECTURE.md` §12).
