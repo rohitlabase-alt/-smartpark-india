@@ -8,6 +8,8 @@ import {
   type Operator,
   type OperatorStatus,
   type ParkingFacility,
+  type ParkingSession,
+  type ParkingSessionEntryResponse,
   type ParkingSlot,
   type ParkingSlotStatus,
   type Reservation,
@@ -22,9 +24,11 @@ import {
   getOperatorFacilitySlots,
   getOperatorMe,
   getOperatorReservations,
+  getOperatorSessions,
   updateOperatorFacility,
   updateOperatorSlot,
 } from "./api/operators";
+import { enterParking, exitParking } from "./api/sessions";
 import { AuthApiError } from "./api/auth";
 
 type LoadState = "loading" | "success" | "error";
@@ -93,6 +97,30 @@ function cancellationErrorMessage(cause: unknown): {
     message: cause instanceof Error ? cause.message : "Unable to cancel the reservation.",
     refreshReservations: false,
   };
+}
+
+function parkingSessionErrorMessage(cause: unknown, verificationStatus?: OperatorStatus): string {
+  if (cause instanceof AuthApiError) {
+    if (cause.status === 401)
+      return "Your operator session is no longer authorized. Please sign in again.";
+    if (cause.code === "ACCOUNT_INACTIVE") return "Your operator account is inactive.";
+    if (cause.status === 403) return operatorVerificationMessage(verificationStatus);
+    if (cause.code === "BOOKING_NOT_FOUND") return "No reservation matches this booking reference.";
+    if (cause.code === "SESSION_NOT_FOUND")
+      return "No parking session was found for this reference.";
+    if (cause.code === "SESSION_ALREADY_ACTIVE")
+      return "This reservation already has an active parking session.";
+    if (cause.code === "RESERVATION_NOT_ENTRYABLE")
+      return "This reservation is not ready for entry yet.";
+    if (cause.code === "FACILITY_NOT_ENTRYABLE")
+      return "This facility is not accepting entries right now.";
+    if (cause.code === "SLOT_NOT_ASSIGNED")
+      return "This reservation has not been assigned a parking slot yet.";
+    if (cause.code === "SLOT_OCCUPIED") return "The assigned slot is currently occupied.";
+    if (cause.code === "SESSION_NOT_ACTIVE") return "This session is no longer active.";
+    return cause.message;
+  }
+  return cause instanceof Error ? cause.message : "Unable to complete the parking operation.";
 }
 
 function label(value: string): string {
@@ -172,6 +200,22 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slotEditStatus, setSlotEditStatus] = useState<ParkingSlotStatus | "">("");
   const [slotEditReservationsEnabled, setSlotEditReservationsEnabled] = useState(false);
   const slotEditRequestId = useRef(0);
+  const [sessions, setSessions] = useState<ParkingSession[]>([]);
+  const [sessionsState, setSessionsState] = useState<LoadState>("loading");
+  const [sessionsError, setSessionsError] = useState("");
+  const sessionsRefreshRequestId = useRef(0);
+  const [entryReference, setEntryReference] = useState("");
+  const [entrySubmitting, setEntrySubmitting] = useState(false);
+  const [entryError, setEntryError] = useState("");
+  const [entrySuccess, setEntrySuccess] = useState("");
+  const [entryResult, setEntryResult] = useState<ParkingSessionEntryResponse>();
+  const entryRequestId = useRef(0);
+  const [copiedEntryToken, setCopiedEntryToken] = useState(false);
+  const [exitConfirmingId, setExitConfirmingId] = useState<number>();
+  const [exitingSessionId, setExitingSessionId] = useState<number>();
+  const [exitError, setExitError] = useState("");
+  const [exitSuccess, setExitSuccess] = useState("");
+  const exitRequestId = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -208,6 +252,22 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlotEditError("");
     setSlotEditSuccess("");
     slotEditRequestId.current += 1;
+    setSessions([]);
+    setSessionsState("loading");
+    setSessionsError("");
+    sessionsRefreshRequestId.current += 1;
+    setEntryReference("");
+    setEntrySubmitting(false);
+    setEntryError("");
+    setEntrySuccess("");
+    setEntryResult(undefined);
+    setCopiedEntryToken(false);
+    entryRequestId.current += 1;
+    setExitConfirmingId(undefined);
+    setExitingSessionId(undefined);
+    setExitError("");
+    setExitSuccess("");
+    exitRequestId.current += 1;
 
     void getOperatorMe(accessToken).then(
       (result) => {
@@ -247,6 +307,19 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
         if (!active) return;
         setReservationsState("error");
         setReservationsError(operatorError(cause, operatorVerificationRef.current));
+      },
+    );
+
+    void getOperatorSessions(accessToken).then(
+      (result) => {
+        if (!active) return;
+        setSessions(result.sessions);
+        setSessionsState("success");
+      },
+      (cause: unknown) => {
+        if (!active) return;
+        setSessionsState("error");
+        setSessionsError(operatorError(cause, operatorVerificationRef.current));
       },
     );
 
@@ -450,6 +523,133 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       }
     } finally {
       if (requestId === cancellationRequestId.current) setCancellationSubmitting(false);
+    }
+  }
+
+  function sessionFacilityName(session: ParkingSession): string {
+    return (
+      facilities.find((facility) => facility.id === session.facilityId)?.name ??
+      `Facility #${session.facilityId}`
+    );
+  }
+
+  function sessionSlotLabel(session: ParkingSession): string {
+    if (session.facilityId !== selectedFacilityId) return `Slot #${session.slotId}`;
+    return slots.find((slot) => slot.id === session.slotId)?.slotCode ?? `Slot #${session.slotId}`;
+  }
+
+  function activeSessionCount(): number {
+    return sessions.filter((session) => session.status === "ACTIVE").length;
+  }
+
+  function refreshOperatorSessions(withinRequestId: number): void {
+    const refreshId = ++sessionsRefreshRequestId.current;
+    void getOperatorSessions(accessToken).then(
+      (result) => {
+        if (refreshId !== sessionsRefreshRequestId.current) return;
+        if (withinRequestId !== entryRequestId.current && withinRequestId !== exitRequestId.current)
+          return;
+        setSessions(result.sessions);
+      },
+      (cause: unknown) => {
+        if (refreshId !== sessionsRefreshRequestId.current) return;
+        if (withinRequestId !== entryRequestId.current && withinRequestId !== exitRequestId.current)
+          return;
+        setSessionsError(cause instanceof Error ? cause.message : "Unable to refresh sessions.");
+      },
+    );
+  }
+
+  async function handleOperatorEntry(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (entrySubmitting) return;
+    const reference = entryReference.trim();
+    if (!reference) {
+      setEntryError("Enter a booking reference to verify.");
+      return;
+    }
+    if (reference.length > 64) {
+      setEntryError("Booking reference must be 64 characters or fewer.");
+      return;
+    }
+    setEntryError("");
+    setEntrySuccess("");
+    setEntryResult(undefined);
+    setCopiedEntryToken(false);
+    const requestId = ++entryRequestId.current;
+    setEntrySubmitting(true);
+    try {
+      const result = await enterParking(accessToken, reference);
+      if (requestId !== entryRequestId.current) return;
+      setEntryResult(result);
+      setEntrySuccess(`${reference} entered: the session is now active.`);
+      void refreshOperatorSessions(requestId);
+    } catch (cause) {
+      if (requestId !== entryRequestId.current) return;
+      setEntryError(parkingSessionErrorMessage(cause, operator?.verificationStatus));
+    } finally {
+      if (requestId === entryRequestId.current) setEntrySubmitting(false);
+    }
+  }
+
+  function copyEntranceToken(token: string): void {
+    setCopiedEntryToken(false);
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") return;
+    navigator.clipboard.writeText(token).then(
+      () => setCopiedEntryToken(true),
+      () => setCopiedEntryToken(false),
+    );
+  }
+
+  function handleRequestExit(session: ParkingSession): void {
+    exitRequestId.current += 1;
+    setExitConfirmingId(session.id);
+    setExitingSessionId(undefined);
+    setExitError("");
+    setExitSuccess("");
+  }
+
+  function handleKeepExit(): void {
+    exitRequestId.current += 1;
+    setExitConfirmingId(undefined);
+    setExitingSessionId(undefined);
+    setExitError("");
+    setExitSuccess("");
+  }
+
+  async function handleConfirmExit(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (exitingSessionId !== undefined || exitConfirmingId === undefined) return;
+    const session = sessions.find((s) => s.id === exitConfirmingId);
+    if (!session) {
+      handleKeepExit();
+      return;
+    }
+    setExitError("");
+    setExitSuccess("");
+    const requestId = ++exitRequestId.current;
+    setExitingSessionId(session.id);
+    try {
+      const completed = await exitParking(accessToken, session.id);
+      if (requestId !== exitRequestId.current) return;
+      setSessions((current) =>
+        current.map((s) => (s.id === completed.session.id ? completed.session : s)),
+      );
+      setExitConfirmingId(undefined);
+      setExitSuccess(
+        `Session at ${sessionFacilityName(completed.session)} is complete; the slot was released.`,
+      );
+    } catch (cause) {
+      if (requestId !== exitRequestId.current) return;
+      setExitError(parkingSessionErrorMessage(cause, operator?.verificationStatus));
+      if (
+        cause instanceof AuthApiError &&
+        (cause.code === "SESSION_NOT_FOUND" || cause.code === "SESSION_NOT_ACTIVE")
+      ) {
+        void refreshOperatorSessions(requestId);
+      }
+    } finally {
+      if (requestId === exitRequestId.current) setExitingSessionId(undefined);
     }
   }
 
@@ -1036,6 +1236,162 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                   )}
               </li>
             ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="operator-panel slots-panel" aria-labelledby="operator-parking-ops-title">
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="section-kicker">Parking operations</p>
+            <h3 id="operator-parking-ops-title">Entry &amp; active sessions</h3>
+          </div>
+          {sessionsState === "success" && (
+            <span className="reservation-count">{activeSessionCount()} active</span>
+          )}
+        </div>
+
+        <form className="parking-entry-form" onSubmit={(event) => void handleOperatorEntry(event)}>
+          <label htmlFor="operator-entry-reference">Booking reference</label>
+          <input
+            id="operator-entry-reference"
+            maxLength={64}
+            value={entryReference}
+            onChange={(event) => {
+              setEntryReference(event.target.value);
+              setEntryError("");
+              setEntrySuccess("");
+            }}
+          />
+          {entryError && (
+            <p className="notice error" role="alert">
+              {entryError}
+            </p>
+          )}
+          {entrySuccess && (
+            <p className="notice success" role="status">
+              {entrySuccess}
+            </p>
+          )}
+          {entryResult && (
+            <div className="parking-entry-result" role="status">
+              <dl className="reservation-details">
+                <div>
+                  <dt>Facility</dt>
+                  <dd>{sessionFacilityName(entryResult.session)}</dd>
+                </div>
+                <div>
+                  <dt>Slot</dt>
+                  <dd>{sessionSlotLabel(entryResult.session)}</dd>
+                </div>
+                <div>
+                  <dt>Entered</dt>
+                  <dd>
+                    <time dateTime={entryResult.session.entryAt}>
+                      {formatTimestamp(entryResult.session.entryAt)}
+                    </time>
+                  </dd>
+                </div>
+              </dl>
+              <p className="entry-token-label">
+                Entry token <span className="optional">(one-time; copy for the driver)</span>
+              </p>
+              <code className="entry-token-code" aria-label="Entry token">
+                {entryResult.entryToken}
+              </code>
+              <button type="button" onClick={() => copyEntranceToken(entryResult.entryToken)}>
+                {copiedEntryToken ? "Copied" : "Copy entry token"}
+              </button>
+            </div>
+          )}
+          <button type="submit" disabled={entrySubmitting}>
+            {entrySubmitting ? "Verifying..." : "Enter & verify vehicle"}
+          </button>
+        </form>
+
+        {exitSuccess && (
+          <p className="notice success" role="status">
+            {exitSuccess}
+          </p>
+        )}
+        {exitError && (
+          <p className="notice error" role="alert">
+            {exitError}
+          </p>
+        )}
+        {sessionsState === "loading" && <p className="notice">Loading active sessions...</p>}
+        {sessionsState === "error" && (
+          <p className="notice error" role="alert">
+            {sessionsError}
+          </p>
+        )}
+        {sessionsState === "success" && activeSessionCount() === 0 && (
+          <p className="empty-state">No vehicles are currently parked in your facilities.</p>
+        )}
+        {sessionsState === "success" && activeSessionCount() > 0 && (
+          <ul className="reservation-list session-list">
+            {sessions
+              .filter((session) => session.status === "ACTIVE")
+              .map((session) => (
+                <li className="reservation-card" key={session.id}>
+                  <div className="reservation-card-heading">
+                    <strong>{sessionFacilityName(session)}</strong>
+                    <span className="reservation-status state-active">Active</span>
+                  </div>
+                  <dl className="reservation-details">
+                    <div>
+                      <dt>Slot</dt>
+                      <dd>{sessionSlotLabel(session)}</dd>
+                    </div>
+                    <div>
+                      <dt>Entered</dt>
+                      <dd>
+                        <time dateTime={session.entryAt}>{formatTimestamp(session.entryAt)}</time>
+                      </dd>
+                    </div>
+                  </dl>
+                  {exitConfirmingId === session.id ? (
+                    <form
+                      className="cancellation-confirmation"
+                      role="group"
+                      aria-labelledby={`exit-title-${session.id}`}
+                      aria-busy={exitingSessionId !== undefined}
+                      onSubmit={(event) => void handleConfirmExit(event)}
+                    >
+                      <h4 id={`exit-title-${session.id}`}>Release this slot?</h4>
+                      <p>
+                        {sessionFacilityName(session)} · {sessionSlotLabel(session)}
+                      </p>
+                      {exitingSessionId === session.id && (
+                        <p className="cancellation-progress" aria-live="polite">
+                          Exiting vehicle...
+                        </p>
+                      )}
+                      <div className="cancellation-actions">
+                        <button type="submit" disabled={exitingSessionId !== undefined}>
+                          {exitingSessionId === session.id ? "Exiting..." : "Confirm exit"}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={exitingSessionId !== undefined}
+                          onClick={handleKeepExit}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleRequestExit(session)}
+                      disabled={exitingSessionId !== undefined}
+                    >
+                      Exit vehicle
+                    </button>
+                  )}
+                </li>
+              ))}
           </ul>
         )}
       </section>

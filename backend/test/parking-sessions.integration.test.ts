@@ -18,6 +18,7 @@ import type {
   Operator,
   ParkingFacility,
   ParkingSession,
+  ParkingSessionResponse,
   ParkingSlot,
 } from "@smartpark/shared";
 import { createApp } from "../src/app.js";
@@ -736,5 +737,178 @@ describe("parking session audit trail", () => {
     expect(metadata).not.toHaveProperty("entryTokenHash");
     expect(metadata.reservationId).toBe(session.reservationId);
     expect(metadata.slotId).toBe(session.slotId);
+  });
+});
+
+describe("GET /api/v1/parking-sessions/by-reservation/:code", () => {
+  let userA: AuthResponse;
+  let userB: AuthResponse;
+  let operator: AuthResponse;
+  let facility: ParkingFacility;
+  let dayOffset = 300;
+
+  beforeAll(async () => {
+    userA = await registerSession("byres-A");
+    userB = await registerSession("byres-B");
+    operator = await registerVerifiedOperatorSession("byres-op");
+    facility = await createFacility(operator.accessToken);
+  });
+
+  async function freshActiveSession(): Promise<{ session: ParkingSession; code: string }> {
+    const freshSlot = await createSlot(operator.accessToken, facility.id);
+    const confirmed = await createConfirmedReservation(userA, facility, freshSlot, dayOffset++);
+    const entry = await enterParking(userA.accessToken, confirmed.reservation.reservationCode);
+    expect(entry.status).toBe(201);
+    return { session: sessionBody(entry.body), code: confirmed.reservation.reservationCode };
+  }
+
+  it("401 unauthenticated", async () => {
+    const res = await jsonGet("/api/v1/parking-sessions/by-reservation/BKG-X");
+    expect(res.status).toBe(401);
+  });
+
+  it("404 unknown reservation code", async () => {
+    const res = await jsonGet(
+      "/api/v1/parking-sessions/by-reservation/BKG-NOT-REAL",
+      userA.accessToken,
+    );
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+  });
+
+  it("404 another user's reservation (no existence disclosure)", async () => {
+    const { code } = await freshActiveSession();
+    const res = await jsonGet(`/api/v1/parking-sessions/by-reservation/${code}`, userB.accessToken);
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+  });
+
+  it("404 a reservation with no session yet", async () => {
+    const confirmed = await createConfirmedReservation(
+      userA,
+      facility,
+      await createSlot(operator.accessToken, facility.id),
+      dayOffset++,
+    );
+    const res = await jsonGet(
+      `/api/v1/parking-sessions/by-reservation/${confirmed.reservation.reservationCode}`,
+      userA.accessToken,
+    );
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("SESSION_NOT_FOUND");
+  });
+
+  it("owner resumes their active session by code (entry token is NOT returned)", async () => {
+    const { session, code } = await freshActiveSession();
+    const res = await jsonGet(`/api/v1/parking-sessions/by-reservation/${code}`, userA.accessToken);
+    expect(res.status).toBe(200);
+    const body = res.body as ParkingSessionResponse;
+    expect(body.session.id).toBe(session.id);
+    expect(body.session.status).toBe("ACTIVE");
+    expect(Object.keys(body)).not.toContain("entryToken");
+  });
+
+  it("the facility operator can look up a customer session by code", async () => {
+    const { session, code } = await freshActiveSession();
+    const res = await jsonGet(
+      `/api/v1/parking-sessions/by-reservation/${code}`,
+      operator.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect(sessionBody(res.body).id).toBe(session.id);
+  });
+});
+
+describe("GET /api/v1/operators/me/sessions", () => {
+  let operator: AuthResponse;
+  let otherOperator: AuthResponse;
+  let facility: ParkingFacility;
+  let otherFacility: ParkingFacility;
+  let dayOffset = 360;
+
+  beforeAll(async () => {
+    operator = await registerVerifiedOperatorSession("sesslist-op");
+    otherOperator = await registerVerifiedOperatorSession("sesslist-other-op");
+    facility = await createFacility(operator.accessToken);
+    otherFacility = await createFacility(otherOperator.accessToken);
+  });
+
+  it("401 unauthenticated", async () => {
+    const res = await jsonGet("/api/v1/operators/me/sessions");
+    expect(res.status).toBe(401);
+  });
+
+  it("403 for a plain user (no operator role)", async () => {
+    const user = await registerSession("sesslist-user");
+    const res = await jsonGet("/api/v1/operators/me/sessions", user.accessToken);
+    expect(res.status).toBe(403);
+  });
+
+  it("403 OPERATOR_NOT_VERIFIED for a pending operator", async () => {
+    const pending = await registerOperatorSession("sesslist-pending");
+    const res = await jsonGet("/api/v1/operators/me/sessions", pending.accessToken);
+    expect(res.status).toBe(403);
+    expect(errorCode(res.body)).toBe("OPERATOR_NOT_VERIFIED");
+  });
+
+  it("empty list before any session exists", async () => {
+    const res = await jsonGet("/api/v1/operators/me/sessions", operator.accessToken);
+    expect(res.status).toBe(200);
+    const body = res.body as { sessions: ParkingSession[] };
+    expect(body.sessions).toEqual([]);
+  });
+
+  it("verified operator sees active + completed sessions across their facilities, newest first", async () => {
+    const firstSlot = await createSlot(operator.accessToken, facility.id);
+    const userOne = await registerSession("sesslist-userA");
+    const bookingOne = await createConfirmedReservation(userOne, facility, firstSlot, dayOffset++);
+    const entryOne = await enterParking(
+      userOne.accessToken,
+      bookingOne.reservation.reservationCode,
+    );
+    expect(entryOne.status).toBe(201);
+    const sessionOne = sessionBody(entryOne.body);
+
+    const secondSlot = await createSlot(operator.accessToken, facility.id);
+    const userTwo = await registerSession("sesslist-userB");
+    const bookingTwo = await createConfirmedReservation(userTwo, facility, secondSlot, dayOffset++);
+    const entryTwo = await enterParking(
+      userTwo.accessToken,
+      bookingTwo.reservation.reservationCode,
+    );
+    expect(entryTwo.status).toBe(201);
+    const sessionTwo = sessionBody(entryTwo.body);
+
+    const list = await jsonGet("/api/v1/operators/me/sessions", operator.accessToken);
+    expect(list.status).toBe(200);
+    const ids = (list.body as { sessions: ParkingSession[] }).sessions.map((s) => s.id);
+    expect(ids).toContain(sessionOne.id);
+    expect(ids).toContain(sessionTwo.id);
+    expect(ids.indexOf(sessionTwo.id)).toBeLessThan(ids.indexOf(sessionOne.id));
+
+    await exitParking(operator.accessToken, sessionOne.id);
+    const afterExit = await jsonGet("/api/v1/operators/me/sessions", operator.accessToken);
+    const reloaded = (afterExit.body as { sessions: ParkingSession[] }).sessions.find(
+      (s) => s.id === sessionOne.id,
+    );
+    expect(reloaded!.status).toBe("COMPLETED");
+  });
+
+  it("does not leak sessions from another operator's facilities", async () => {
+    const otherSlot = await createSlot(otherOperator.accessToken, otherFacility.id);
+    const customer = await registerSession("sesslist-customer");
+    const booking = await createConfirmedReservation(
+      customer,
+      otherFacility,
+      otherSlot,
+      dayOffset++,
+    );
+    const entry = await enterParking(customer.accessToken, booking.reservation.reservationCode);
+    expect(entry.status).toBe(201);
+    const session = sessionBody(entry.body);
+
+    const list = await jsonGet("/api/v1/operators/me/sessions", operator.accessToken);
+    const ids = (list.body as { sessions: ParkingSession[] }).sessions.map((s) => s.id);
+    expect(ids).not.toContain(session.id);
   });
 });

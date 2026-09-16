@@ -14,6 +14,7 @@ import { requireAuth, requireRole } from "../../middleware/auth.js";
 import { validateBody } from "../../middleware/validate.js";
 import { operatorsService } from "./operators.service.js";
 import { facilitiesService } from "../parking/facilities.service.js";
+import { sessionsService } from "../sessions/sessions.service.js";
 
 const operatorRegisterSchema = z
   .object({
@@ -88,6 +89,15 @@ operatorsRouter.get(
   OPERATOR_ROUTES,
   asyncHandler(async (req: AuthenticatedRequest, res) => {
     res.json(await operatorsService.listOperatorReservations(req.auth.userId));
+  }),
+);
+
+operatorsRouter.get(
+  "/me/sessions",
+  requireAuth(),
+  OPERATOR_ROUTES,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    res.json(await sessionsService.listSessionsForOperator(req.auth.userId));
   }),
 );
 

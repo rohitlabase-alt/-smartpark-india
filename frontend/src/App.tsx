@@ -11,6 +11,7 @@ import {
   type FacilityAvailabilityResponse,
   type LoginRequest,
   type Operator,
+  type ParkingSession,
   type ParkingSlot,
   type Reservation,
   type RegisterRequest,
@@ -27,6 +28,7 @@ import {
   getReservation,
 } from "./api/reservations";
 import { initiatePayment, verifyPayment } from "./api/payments";
+import { enterParking, exitParking, getParkingSessionByReservation } from "./api/sessions";
 import {
   AuthApiError,
   clearMemorySession,
@@ -165,6 +167,206 @@ function generateIdempotencyKey(): string {
     return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
   }
   return `idempotency-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parkingSessionErrorMessage(cause: unknown): string {
+  if (cause instanceof AuthApiError) {
+    if (cause.status === 401) return "Your session is no longer authorized. Please sign in again.";
+    if (cause.status === 403) return "You are not authorized to perform this parking action.";
+    switch (cause.code) {
+      case "BOOKING_NOT_FOUND":
+        return "No reservation matches this booking reference.";
+      case "SESSION_NOT_FOUND":
+        return "No parking session was found for this reservation.";
+      case "SESSION_ALREADY_ACTIVE":
+        return "This reservation already has an active parking session.";
+      case "RESERVATION_NOT_ENTRYABLE":
+        return "This reservation is not ready for entry yet.";
+      case "FACILITY_NOT_ENTRYABLE":
+        return "This facility is not accepting entries right now.";
+      case "SLOT_NOT_ASSIGNED":
+        return "This reservation has not been assigned a parking slot yet.";
+      case "SLOT_OCCUPIED":
+        return "The assigned slot is currently occupied.";
+      case "SESSION_NOT_ACTIVE":
+        return "This session is no longer active.";
+    }
+  }
+  return cause instanceof Error ? cause.message : "Unable to complete the parking operation.";
+}
+
+type ParkingPanelState = "idle" | "entering" | "active" | "exiting" | "complete" | "error";
+
+function ParkingSessionPanel({
+  accessToken,
+  reservation,
+}: {
+  accessToken: string;
+  reservation: Reservation;
+}) {
+  const [state, setState] = useState<ParkingPanelState>("idle");
+  const [session, setSession] = useState<ParkingSession>();
+  const [entryToken, setEntryToken] = useState<string>();
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [copiedEntryToken, setCopiedEntryToken] = useState(false);
+  const requestId = useRef(0);
+
+  async function handleEnter(): Promise<void> {
+    if (state === "entering") return;
+    const currentRequestId = ++requestId.current;
+    setState("entering");
+    setError("");
+    setMessage("");
+    try {
+      const result = await enterParking(accessToken, reservation.reservationCode);
+      if (currentRequestId !== requestId.current) return;
+      setSession(result.session);
+      setEntryToken(result.entryToken);
+      setMessage("Vehicle entered. Copy the one-time token for the entry gate.");
+      setState("active");
+    } catch (cause) {
+      if (currentRequestId !== requestId.current) return;
+      if (cause instanceof AuthApiError && cause.code === "SESSION_ALREADY_ACTIVE") {
+        try {
+          const current = await getParkingSessionByReservation(
+            accessToken,
+            reservation.reservationCode,
+          );
+          if (currentRequestId !== requestId.current) return;
+          setSession(current.session);
+          setEntryToken(undefined);
+          setMessage("This reservation already has an active parking session.");
+          setState("active");
+        } catch (innerCause) {
+          if (currentRequestId !== requestId.current) return;
+          setError(parkingSessionErrorMessage(innerCause));
+          setState("error");
+        }
+        return;
+      }
+      setError(parkingSessionErrorMessage(cause));
+      setState("error");
+    }
+  }
+
+  async function handleExit(): Promise<void> {
+    if (!session || state === "exiting") return;
+    const currentRequestId = ++requestId.current;
+    setState("exiting");
+    setError("");
+    try {
+      const completed = await exitParking(accessToken, session.id);
+      if (currentRequestId !== requestId.current) return;
+      setSession(completed.session);
+      setEntryToken(undefined);
+      setMessage("Vehicle exited; the slot was released.");
+      setState("complete");
+    } catch (cause) {
+      if (currentRequestId !== requestId.current) return;
+      setError(parkingSessionErrorMessage(cause));
+      setState("active");
+    }
+  }
+
+  async function copyEntryToken(): Promise<void> {
+    if (!entryToken) return;
+    setCopiedEntryToken(false);
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(entryToken);
+      setCopiedEntryToken(true);
+    } catch {
+      setCopiedEntryToken(false);
+    }
+  }
+
+  if (reservation.state !== "CONFIRMED") return null;
+
+  const hasSession = session !== undefined;
+
+  return (
+    <section
+      className="parking-session-panel"
+      aria-labelledby={`parking-session-title-${reservation.reservationCode}`}
+    >
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Parking</p>
+          <h4 id={`parking-session-title-${reservation.reservationCode}`}>Parking session</h4>
+        </div>
+      </div>
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
+      {message && (
+        <p className="notice success" role="status">
+          {message}
+        </p>
+      )}
+      {state === "entering" && (
+        <p className="notice" aria-live="polite">
+          Starting your parking session...
+        </p>
+      )}
+      {hasSession && (
+        <dl className="reservation-detail-list">
+          <div>
+            <dt>Status</dt>
+            <dd>{statusLabel(session!.status)}</dd>
+          </div>
+          <div>
+            <dt>Slot ID</dt>
+            <dd>{session!.slotId}</dd>
+          </div>
+          <div>
+            <dt>Entered</dt>
+            <dd>
+              <time dateTime={session!.entryAt}>{formatTimestamp(session!.entryAt)}</time>
+            </dd>
+          </div>
+          {session!.exitAt && (
+            <div>
+              <dt>Exited</dt>
+              <dd>
+                <time dateTime={session!.exitAt}>{formatTimestamp(session!.exitAt)}</time>
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
+      {entryToken && (
+        <div className="parking-entry-result">
+          <p className="entry-token-label">
+            Entry token <span className="optional">(one-time)</span>
+          </p>
+          <code className="entry-token-code" aria-label="Entry token">
+            {entryToken}
+          </code>
+          <button type="button" onClick={() => void copyEntryToken()}>
+            {copiedEntryToken ? "Copied" : "Copy entry token"}
+          </button>
+        </div>
+      )}
+      {(state === "idle" || state === "error" || state === "complete") && (
+        <button type="button" onClick={() => void handleEnter()}>
+          Enter parking
+        </button>
+      )}
+      {state === "active" && (
+        <button className="secondary-button" type="button" onClick={() => void handleExit()}>
+          Exit vehicle
+        </button>
+      )}
+      {state === "exiting" && (
+        <p className="notice" aria-live="polite">
+          Exiting vehicle...
+        </p>
+      )}
+    </section>
+  );
 }
 
 export default function App() {
@@ -613,6 +815,7 @@ export default function App() {
         )}
         {screen === "reservations" && sessionState === "authenticated" && session ? (
           <ReservationsView
+            accessToken={session.accessToken}
             cancellationCode={cancellationCode}
             cancellationError={cancellationError}
             cancellationSuccess={cancellationSuccess}
@@ -730,6 +933,7 @@ export default function App() {
 }
 
 function ReservationsView({
+  accessToken,
   cancellationCode,
   cancellationError,
   cancellationSuccess,
@@ -753,6 +957,7 @@ function ReservationsView({
   paymentVerifySubmitting,
   state,
 }: {
+  accessToken: string;
   cancellationCode: string | undefined;
   cancellationError: string;
   cancellationSuccess: string;
@@ -789,6 +994,7 @@ function ReservationsView({
       </div>
       {detailCode && (
         <ReservationDetail
+          accessToken={accessToken}
           code={detailCode}
           error={detailError}
           onInitiatePayment={onInitiatePayment}
@@ -844,6 +1050,7 @@ function ReservationsView({
 }
 
 function ReservationDetail({
+  accessToken,
   code,
   error,
   onInitiatePayment,
@@ -856,6 +1063,7 @@ function ReservationDetail({
   reservation,
   state,
 }: {
+  accessToken: string;
   code: string;
   error: string;
   onInitiatePayment: () => void;
@@ -967,6 +1175,11 @@ function ReservationDetail({
               </div>
             )}
           </dl>
+          <ParkingSessionPanel
+            accessToken={accessToken}
+            key={reservation.reservationCode}
+            reservation={reservation}
+          />
           {reservation.state === "PENDING_PAYMENT" && (
             <div className="payment-actions" aria-live="polite">
               <p>Pay the pending amount to confirm this reservation.</p>

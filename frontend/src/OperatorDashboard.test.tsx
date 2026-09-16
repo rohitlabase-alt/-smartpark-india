@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Operator,
   ParkingFacility,
+  ParkingSession,
   ParkingSlot,
   PublicUser,
   Reservation,
@@ -132,6 +133,10 @@ function reservationsResponse(items: Reservation[]): Response {
   return new Response(JSON.stringify({ reservations: items }), { status: 200 });
 }
 
+function sessionsResponse(items: ParkingSession[] = []): Response {
+  return new Response(JSON.stringify({ sessions: items }), { status: 200 });
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -249,22 +254,23 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("Koregaon Parking Co");
     expect(container.textContent).toContain("Koregaon Lot");
     expect(container.textContent).toContain("A01");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(fetchMock.mock.calls[2]![0]).toContain("/operators/me/reservations");
-    expect(fetchMock.mock.calls[3]![0]).toContain("/facilities/4/slots");
+    expect(fetchMock.mock.calls[4]![0]).toContain("/facilities/4/slots");
 
     const camp = Array.from(container.querySelectorAll<HTMLButtonElement>(".facility-item")).find(
       (button) => button.textContent?.includes("Camp Lot"),
     )!;
     await act(async () => camp.click());
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(fetchMock.mock.calls[4]![0]).toContain("/facilities/5/slots");
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]![0]).toContain("/facilities/5/slots");
   });
 
   it("shows profile loading while the profile request is pending", async () => {
@@ -283,7 +289,8 @@ describe("operator dashboard", () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
-      .mockResolvedValueOnce(reservationsResponse([]));
+      .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse());
     await renderDashboard();
     expect(container.textContent).toContain("No facilities are associated");
     expect(container.textContent).not.toContain("slots");
@@ -294,6 +301,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("has no slots to display");
@@ -313,6 +321,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(createdSlot), { status: 201 }));
     await renderDashboard();
@@ -325,9 +334,9 @@ describe("operator dashboard", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(fetchMock.mock.calls[4]![0]).toContain("/operators/me/facilities/4/slots");
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/facilities/4/slots");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({ slotCode: "B01" }),
     });
@@ -346,6 +355,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Create Parking Slot").click());
@@ -353,14 +363,14 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("Enter a slot code");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
 
     setField("slot-code", "x".repeat(41));
     await act(async () =>
       container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("40 characters or fewer");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
 
     setField("slot-code", "B01");
     setField("slot-vehicle-type", "v".repeat(33));
@@ -368,7 +378,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("32 characters or fewer");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(container.querySelector(".facility-item.selected")?.textContent).toContain(
       "Koregaon Lot",
     );
@@ -387,6 +397,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(updatedSlot), { status: 200 }));
     await renderDashboard();
@@ -403,8 +414,8 @@ describe("operator dashboard", () => {
     );
     await settle();
 
-    expect(fetchMock.mock.calls[4]![0]).toContain("/facilities/4/slots/9");
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+    expect(fetchMock.mock.calls[5]![0]).toContain("/facilities/4/slots/9");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
       method: "PATCH",
       body: JSON.stringify({
         vehicleType: "motorcycle",
@@ -423,6 +434,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit slot").click());
@@ -431,7 +443,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".slot-edit-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("Enter a vehicle type");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("shows slot creation loading state and prevents duplicate POST requests", async () => {
@@ -441,6 +453,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Create Parking Slot").click());
@@ -457,7 +470,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLButtonElement>(".slot-create-form button[type=submit]")?.disabled,
     ).toBe(true);
     await act(async () => form.requestSubmit());
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     resolveCreate(new Response(JSON.stringify({ ...slot, slotCode: "B01" }), { status: 201 }));
     await settle();
   });
@@ -474,6 +487,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ error: { code, message: `${status} failure` } }), { status }),
@@ -485,7 +499,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".slot-create-form")!.requestSubmit(),
     );
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
     expect(container.querySelector<HTMLInputElement>("#slot-code")?.value).toBe("B01");
   });
@@ -500,6 +514,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Create Parking Slot").click());
@@ -524,7 +539,7 @@ describe("operator dashboard", () => {
     expect(container.querySelector(".facility-item.selected")?.textContent).toContain("Camp Lot");
     expect(container.textContent).toContain("B01");
     expect(container.textContent).not.toContain("A02");
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it("opens the selected facility edit form with authoritative values", async () => {
@@ -532,6 +547,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -559,6 +575,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -568,7 +585,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("Name, facility type, and city are required");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
 
     setField("edit-facility-name", facility.name);
     setField("edit-facility-capacity", "0");
@@ -576,7 +593,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("Capacity must be a whole number");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
 
     setField("edit-facility-capacity", String(facility.capacity));
     setField("edit-facility-latitude", "91");
@@ -584,7 +601,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
     );
     expect(container.textContent).toContain("Enter valid latitude and longitude");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("updates only the selected facility from the authoritative PATCH response", async () => {
@@ -602,6 +619,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -614,9 +632,9 @@ describe("operator dashboard", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(fetchMock.mock.calls[4]![0]).toContain("/operators/me/facilities/4");
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/facilities/4");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
       method: "PATCH",
       body: JSON.stringify({
         name: "Updated Lot",
@@ -643,6 +661,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -654,9 +673,12 @@ describe("operator dashboard", () => {
     const form = container.querySelector<HTMLFormElement>(".facility-edit-form")!;
     await act(async () => form.requestSubmit());
     expect(container.textContent).toContain("Saving...");
-    expect(container.querySelector<HTMLButtonElement>("button[type=submit]")?.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(".facility-edit-form button[type=submit]")
+        ?.disabled,
+    ).toBe(true);
     await act(async () => form.requestSubmit());
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     resolveUpdate(new Response(JSON.stringify(facility), { status: 200 }));
     await settle();
   });
@@ -673,6 +695,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ error: { code, message: `${status} failure` } }), { status }),
@@ -683,7 +706,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".facility-edit-form")!.requestSubmit(),
     );
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
     expect(container.querySelector<HTMLInputElement>("#edit-facility-name")?.value).toBe(
       facility.name,
@@ -700,6 +723,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -725,7 +749,7 @@ describe("operator dashboard", () => {
     expect(container.querySelector(".facility-item.selected")?.textContent).toContain("Camp Lot");
     expect(container.textContent).not.toContain("Stale Update");
     expect(container.textContent).toContain("B01");
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it("ignores a stale facility update error after selection changes", async () => {
@@ -738,6 +762,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Edit facility").click());
@@ -776,6 +801,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify(createdFacility), { status: 201 }));
     await renderDashboard();
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
@@ -792,8 +818,8 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLFormElement>(".facility-create-form")!.requestSubmit(),
     );
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({ name: "New Lot", type: "private", city: "Pune", capacity: 80 }),
     });
@@ -808,6 +834,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockReturnValueOnce(
         new Promise((done) => {
           resolve = done;
@@ -826,7 +853,7 @@ describe("operator dashboard", () => {
       container.querySelector<HTMLButtonElement>(".facility-create-form button[type=submit]")
         ?.disabled,
     ).toBe(true);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     resolve(new Response(JSON.stringify({ ...facility, name: "New Lot" }), { status: 201 }));
     await settle();
   });
@@ -841,6 +868,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
@@ -919,6 +947,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     for (const text of ["Delete", "Save", "Update"]) {
@@ -934,9 +963,10 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(fetchMock.mock.calls[2]![0]).toContain("/operators/me/reservations");
     expect(container.textContent).toContain("Reservations");
     expect(container.textContent).toContain("1 total");
@@ -952,6 +982,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("BKG-ABC123");
@@ -973,6 +1004,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([reservation, uncountedReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("Koregaon Lot");
@@ -998,6 +1030,7 @@ describe("operator dashboard", () => {
         new Response(JSON.stringify([facility, secondFacility]), { status: 200 }),
       )
       .mockResolvedValueOnce(reservationsResponse([crossFacilityReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     const crossCard = Array.from(
@@ -1012,6 +1045,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("No reservations have been made for your facilities.");
@@ -1030,6 +1064,7 @@ describe("operator dashboard", () => {
           { status: 503 },
         ),
       )
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -1053,6 +1088,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([customerReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("BKG-PII001");
@@ -1067,6 +1103,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([zonedReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("Not assigned");
@@ -1078,6 +1115,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).not.toContain("Zone");
@@ -1089,6 +1127,7 @@ describe("operator dashboard", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([cancelledReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(container.textContent).toContain("BKG-CANCELLED");
@@ -1110,6 +1149,7 @@ describe("operator dashboard", () => {
           resolveReservations = resolve;
         }),
       )
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await act(async () => root.render(<OperatorDashboard accessToken="access-token" />));
     expect(container.textContent).toContain("Loading reservations...");
@@ -1128,6 +1168,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(
         reservationsResponse([reservation, cancelledReservation, uncountedReservation]),
       )
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     expect(reservationCard("BKG-ABC123").querySelector(".cancel-reservation-button")).toBeTruthy();
@@ -1141,6 +1182,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Cancel Reservation").click());
@@ -1159,7 +1201,7 @@ describe("operator reservation cancellation", () => {
 
     await act(async () => buttonWithText("Keep Reservation").click());
     expect(container.querySelector(".cancellation-confirmation")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("confirms cancellation with a trimmed reason and updates the reservation from the response", async () => {
@@ -1175,6 +1217,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ reservation: cancelled }), { status: 200 }),
@@ -1187,9 +1230,9 @@ describe("operator reservation cancellation", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-    expect(fetchMock.mock.calls[4]![0]).toContain("/operators/me/reservations/BKG-ABC123/cancel");
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/reservations/BKG-ABC123/cancel");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({ reason: "venue closed" }),
     });
@@ -1208,6 +1251,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(
@@ -1228,7 +1272,7 @@ describe("operator reservation cancellation", () => {
     );
     await settle();
 
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -1242,6 +1286,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
     await act(async () => buttonWithText("Cancel Reservation").click());
@@ -1258,7 +1303,7 @@ describe("operator reservation cancellation", () => {
         ?.disabled,
     ).toBe(true);
     await act(async () => form.requestSubmit());
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     resolveCancel(
       new Response(
         JSON.stringify({
@@ -1288,6 +1333,7 @@ describe("operator reservation cancellation", () => {
         .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
         .mockResolvedValueOnce(reservationsResponse([reservation]))
+        .mockResolvedValueOnce(sessionsResponse())
         .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
         .mockResolvedValueOnce(reservationError(status, code, `${status} failure`));
       await renderDashboard();
@@ -1296,7 +1342,7 @@ describe("operator reservation cancellation", () => {
         container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
       );
       await settle();
-      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(fetchMock).toHaveBeenCalledTimes(6);
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
       expect(container.querySelector(".cancellation-confirmation")).toBeTruthy();
       expect(reservationCard("BKG-ABC123").querySelector(".cancel-reservation-button")).toBeNull();
@@ -1316,6 +1362,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         reservationError(409, "ALREADY_CANCELLED", "This booking is already cancelled"),
@@ -1328,8 +1375,8 @@ describe("operator reservation cancellation", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(6);
-    expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/reservations");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/reservations");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "This reservation is already cancelled.",
     );
@@ -1349,6 +1396,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         reservationError(422, "CANNOT_CANCEL_COMPLETED", "Completed bookings cannot be cancelled"),
@@ -1376,6 +1424,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation, zonedReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }))
       .mockResolvedValueOnce(
         new Response(
@@ -1405,7 +1454,7 @@ describe("operator reservation cancellation", () => {
     expect(cardA.querySelector(".cancel-reservation-button")).toBeNull();
     expect(cardB.textContent).toContain("CONFIRMED");
     expect(cardB.querySelector(".cancel-reservation-button")).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 
   it("ignores a stale cancellation response when a newer cancellation is active", async () => {
@@ -1415,6 +1464,7 @@ describe("operator reservation cancellation", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(operator), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
       .mockResolvedValueOnce(reservationsResponse([reservation, zonedReservation]))
+      .mockResolvedValueOnce(sessionsResponse())
       .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
     await renderDashboard();
 
@@ -1482,6 +1532,236 @@ describe("operator reservation cancellation", () => {
     expect(cardB.textContent).toContain("CANCELLED");
     expect(cardB.querySelector(".cancel-reservation-button")).toBeNull();
     expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+});
+
+describe("operator parking operations", () => {
+  const activeSession: ParkingSession = {
+    id: 501,
+    reservationId: 12,
+    facilityId: 4,
+    slotId: 9,
+    userId: 7,
+    entryAt: "2026-09-10T08:00:00.000Z",
+    exitAt: null,
+    status: "ACTIVE",
+    createdAt: "2026-09-10T08:00:00.000Z",
+    updatedAt: "2026-09-10T08:00:00.000Z",
+  };
+
+  const completedSession: ParkingSession = {
+    ...activeSession,
+    status: "COMPLETED",
+    exitAt: "2026-09-10T10:00:00.000Z",
+  };
+
+  async function renderParkingOps(
+    sessions: ParkingSession[],
+    operatorOverride: Operator = operator,
+  ) {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(operatorOverride), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([facility]), { status: 200 }))
+      .mockResolvedValueOnce(reservationsResponse([]))
+      .mockResolvedValueOnce(sessionsResponse(sessions))
+      .mockResolvedValueOnce(new Response(JSON.stringify([slot]), { status: 200 }));
+    await renderDashboard();
+    return fetchMock;
+  }
+
+  it("shows the entry form and an empty state when no vehicles are parked", async () => {
+    await renderParkingOps([]);
+    expect(container.textContent).toContain("Entry & active sessions");
+    expect(container.textContent).toContain("0 active");
+    expect(container.textContent).toContain("No vehicles are currently parked in your facilities.");
+    expect(container.querySelector("form.parking-entry-form")).toBeTruthy();
+    expect(buttonWithText("Enter & verify vehicle")).toBeTruthy();
+  });
+
+  it("lists only active sessions with facility and slot details", async () => {
+    await renderParkingOps([activeSession, completedSession]);
+    expect(container.textContent).toContain("1 active");
+    const list = container.querySelector(".session-list")!;
+    expect(list.textContent).toContain("Koregaon Lot");
+    expect(list.textContent).toContain("Active");
+    expect(list.textContent).toContain("A01");
+    expect(list.textContent).not.toContain("COMPLETED");
+    expect(buttonWithText("Exit vehicle")).toBeTruthy();
+  });
+
+  it("validates a booking reference before calling the entry API", async () => {
+    const fetchMock = await renderParkingOps([]);
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.querySelector(".parking-entry-form [role='alert']")?.textContent).toContain(
+      "Enter a booking reference to verify.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("enters a vehicle, shows the token, and refreshes the active sessions", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: activeSession, entryToken: "ENTRY-123" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(sessionsResponse([activeSession]));
+    setField("operator-entry-reference", "BKG-ENTRY1");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock.mock.calls[5]![0]).toContain("/parking-sessions/entry");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ reservationCode: "BKG-ENTRY1" }),
+    });
+    expect(container.textContent).toContain("BKG-ENTRY1 entered: the session is now active.");
+    expect(container.querySelector<HTMLElement>(".entry-token-code")?.textContent).toBe(
+      "ENTRY-123",
+    );
+    expect(buttonWithText("Copy entry token")).toBeTruthy();
+    expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/sessions");
+    expect(container.textContent).toContain("Koregaon Lot");
+    expect(container.textContent).toContain("1 active");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("copies the entry token to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      const fetchMock = await renderParkingOps([]);
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: activeSession, entryToken: "ENTRY-123" }), {
+          status: 200,
+        }),
+      );
+      setField("operator-entry-reference", "BKG-ENTRY1");
+      await act(async () =>
+        container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+      );
+      await settle();
+      await act(async () => buttonWithText("Copy entry token").click());
+      await settle();
+      expect(writeText).toHaveBeenCalledWith("ENTRY-123");
+      expect(buttonWithText("Copied")).toBeTruthy();
+    } finally {
+      delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it("shows a friendly error when the booking reference does not match a reservation", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock.mockResolvedValueOnce(
+      reservationError(404, "BOOKING_NOT_FOUND", "unknown reference"),
+    );
+    setField("operator-entry-reference", "BKG-UNKNOWN");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.querySelector(".parking-entry-form [role='alert']")?.textContent).toContain(
+      "No reservation matches this booking reference.",
+    );
     expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("maps an unverified operator error on entry to the verification message", async () => {
+    const pendingOperator: Operator = {
+      ...operator,
+      verificationStatus: "PENDING" as Operator["verificationStatus"],
+    };
+    const fetchMock = await renderParkingOps([], pendingOperator);
+    fetchMock.mockResolvedValueOnce(reservationError(403, "OPERATOR_NOT_VERIFIED", "not verified"));
+    setField("operator-entry-reference", "BKG-ENTRY1");
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".parking-entry-form")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.querySelector(".parking-entry-form [role='alert']")?.textContent).toContain(
+      "Your operator account is waiting for admin verification.",
+    );
+  });
+
+  it("opens an inline exit confirmation and keeps the session when cancelled", async () => {
+    const fetchMock = await renderParkingOps([activeSession]);
+    await act(async () => buttonWithText("Exit vehicle").click());
+    expect(container.querySelector(".cancellation-confirmation")?.textContent).toContain(
+      "Release this slot?",
+    );
+    expect(container.querySelector(".cancellation-confirmation")?.textContent).toContain(
+      "Koregaon Lot · A01",
+    );
+    await act(async () => buttonWithText("Cancel").click());
+    await settle();
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("exits an active session and updates it from the authoritative response", async () => {
+    const fetchMock = await renderParkingOps([activeSession]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ session: completedSession }), { status: 200 }),
+    );
+    await act(async () => buttonWithText("Exit vehicle").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+    expect(fetchMock.mock.calls[5]![0]).toContain("/parking-sessions/501/exit");
+    expect(container.textContent).toContain(
+      "Session at Koregaon Lot is complete; the slot was released.",
+    );
+    expect(container.textContent).toContain("No vehicles are currently parked in your facilities.");
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("shows exiting state and prevents duplicate exit submissions", async () => {
+    let resolveExit!: (response: Response) => void;
+    const fetchMock = await renderParkingOps([activeSession]);
+    fetchMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveExit = resolve;
+      }),
+    );
+    await act(async () => buttonWithText("Exit vehicle").click());
+    const form = container.querySelector<HTMLFormElement>(".cancellation-confirmation")!;
+    await act(async () => form.requestSubmit());
+    expect(container.textContent).toContain("Exiting vehicle...");
+    expect(
+      container.querySelector<HTMLButtonElement>(".cancellation-confirmation button[type=submit]")
+        ?.disabled,
+    ).toBe(true);
+    await act(async () => form.requestSubmit());
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    resolveExit(new Response(JSON.stringify({ session: completedSession }), { status: 200 }));
+    await settle();
+    expect(container.querySelector(".cancellation-confirmation")).toBeNull();
+  });
+
+  it("keeps the confirmation open and refreshes sessions when the exit loses the session", async () => {
+    const fetchMock = await renderParkingOps([activeSession]);
+    fetchMock
+      .mockResolvedValueOnce(reservationError(409, "SESSION_NOT_ACTIVE", "already left"))
+      .mockResolvedValueOnce(sessionsResponse([]));
+    await act(async () => buttonWithText("Exit vehicle").click());
+    await act(async () =>
+      container.querySelector<HTMLFormElement>(".cancellation-confirmation")!.requestSubmit(),
+    );
+    await settle();
+    expect(container.textContent).toContain("This session is no longer active.");
+    expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/sessions");
+    expect(container.textContent).toContain("0 active");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 });

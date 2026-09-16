@@ -49,6 +49,17 @@ sessionsRouter.post(
 );
 
 sessionsRouter.get(
+  "/by-reservation/:reservationCode",
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    const code = req.params.reservationCode?.trim() ?? "";
+    if (!code || code.length > 64) {
+      throw notFound("SESSION_NOT_FOUND", "Parking session not found");
+    }
+    res.json(await sessionsService.getSessionByReservation(req.auth.userId, req.auth.roles, code));
+  }),
+);
+
+sessionsRouter.get(
   "/:id",
   asyncHandler(async (req: AuthenticatedRequest, res) => {
     const sessionId = parseSessionId(req.params.id);

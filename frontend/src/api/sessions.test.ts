@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ParkingSession, PublicUser } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
-import { enterParking, exitParking, getParkingSession, isParkingSession } from "./sessions";
+import {
+  enterParking,
+  exitParking,
+  getParkingSession,
+  getParkingSessionByReservation,
+  isParkingSession,
+} from "./sessions";
 
 const user: PublicUser = {
   id: 11,
@@ -153,6 +159,67 @@ describe("getParkingSession API client", () => {
   it("surfaces network failures", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     await expect(getParkingSession("access-token", 1)).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the parking session service.",
+    });
+  });
+});
+
+describe("getParkingSessionByReservation API client", () => {
+  it("requests the latest session by reservation code with bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ session: activeSession }), { status: 200 }));
+
+    const result = await getParkingSessionByReservation("access-token", "BKG-ABC123");
+    expect(result.session.id).toBe(501);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE_URL}/parking-sessions/by-reservation/BKG-ABC123`,
+      {
+        headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+      },
+    );
+  });
+
+  it("encodes the reservation code in the path", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ session: activeSession }), { status: 200 }));
+    await getParkingSessionByReservation("access-token", "BKG A/B");
+    expect(fetchMock.mock.calls[0]![0]).toContain("/by-reservation/BKG%20A%2FB");
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED", "Authentication required"],
+    [404, "SESSION_NOT_FOUND", "No parking session found for this reservation"],
+  ] as const)("surfaces %i %s lookup errors", async (status, code, message) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code, message } }), { status }),
+    );
+    await expect(
+      getParkingSessionByReservation("access-token", "BKG-ABC123"),
+    ).rejects.toMatchObject({
+      name: "AuthApiError",
+      status,
+      code,
+      message,
+    } satisfies Partial<AuthApiError>);
+  });
+
+  it("rejects malformed lookup responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ session: { id: 1 } }), { status: 200 }),
+    );
+    await expect(getParkingSessionByReservation("access-token", "BKG-ABC123")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it("surfaces network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(
+      getParkingSessionByReservation("access-token", "BKG-ABC123"),
+    ).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the parking session service.",
     });

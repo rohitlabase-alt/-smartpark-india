@@ -17,10 +17,15 @@
  * unrelated users cannot distinguish a nonexistent session from another's.
  */
 import type { UserRoleCode } from "@smartpark/shared";
-import type { ParkingSessionEntryResponse, ParkingSessionResponse } from "@smartpark/shared";
+import type {
+  ParkingSessionEntryResponse,
+  ParkingSessionListResponse,
+  ParkingSessionResponse,
+} from "@smartpark/shared";
 import { withTransaction, getPool } from "../../db.js";
 import { conflict, notFound } from "../../http/errors.js";
 import { operatorsRepository } from "../operators/operators.repository.js";
+import { assertVerifiedOperator } from "../operators/operator-verification.js";
 import { facilitiesRepository } from "../parking/facilities.repository.js";
 import { slotsRepository } from "../parking/slots.repository.js";
 import { auditService } from "../audit/audit.service.js";
@@ -28,10 +33,12 @@ import {
   completeSession,
   currentSlotStatus,
   findReservationForEntry,
+  findSessionByReservationForAccess,
   findSessionForAccess,
   generateEntryToken,
   hasActiveSessionForReservation,
   insertSession,
+  listSessionsForOperator,
   occupySlot,
   releaseSlot,
   sha256hex,
@@ -215,5 +222,42 @@ export const sessionsService = {
       throw notFound("SESSION_NOT_FOUND", "Parking session not found");
     }
     return { session: toSessionDto(session) };
+  },
+
+  /**
+   * Read: the most recent session for a booking code, access-checked (owner or
+   * facility operator). Lets a user resume their active session — and exit it —
+   * after a reload, and lets an operator confirm a vehicle's on-site state by
+   * reference (Phase 9 Block 2). A reservation the caller cannot access is
+   * indistinguishable from a nonexistent one (404, no existence disclosure).
+   */
+  async getSessionByReservation(
+    userId: number,
+    roles: UserRoleCode[],
+    reservationCode: string,
+  ): Promise<ParkingSessionResponse> {
+    const operatorId = await resolveOperatorId(userId, roles);
+    const session = await findSessionByReservationForAccess(
+      getPool(),
+      reservationCode,
+      userId,
+      operatorId,
+    );
+    if (!session) {
+      throw notFound("SESSION_NOT_FOUND", "No parking session found for this reservation");
+    }
+    return { session: toSessionDto(session) };
+  },
+
+  /**
+   * Read: sessions across the caller's VERIFIED operator facilities (newest
+   * entry first). Backs the operator "active parking sessions" panel; exit
+   * still goes through the access-checked /:id/exit path. Shares the facility
+   * gate (403 OPERATOR_NOT_VERIFIED) with the other operator actions.
+   */
+  async listSessionsForOperator(userId: number): Promise<ParkingSessionListResponse> {
+    const operator = await assertVerifiedOperator(userId);
+    const sessions = await listSessionsForOperator(getPool(), operator.id);
+    return { sessions: sessions.map(toSessionDto) };
   },
 };

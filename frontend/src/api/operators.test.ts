@@ -11,6 +11,7 @@ import {
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorReservations,
+  getOperatorSessions,
   getOperatorMe,
   createOperatorFacility,
   createOperatorSlot,
@@ -543,6 +544,65 @@ describe("operator reservations API client", () => {
   it("maps network failures to the operator service error", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     await expect(getOperatorReservations("access-token")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
+
+describe("operator parking sessions API client", () => {
+  const activeSession = {
+    id: 501,
+    reservationId: 301,
+    facilityId: 4,
+    slotId: 9,
+    userId: 7,
+    entryAt: "2026-09-15T08:00:00.000Z",
+    exitAt: null,
+    status: "ACTIVE" as const,
+    createdAt: "2026-09-15T08:00:00.000Z",
+    updatedAt: "2026-09-15T08:00:00.000Z",
+  };
+
+  it("gets sessions with the exact endpoint and bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(JSON.stringify({ sessions: [activeSession] }), { status: 200 }),
+      );
+    await expect(getOperatorSessions("access-token")).resolves.toEqual({
+      sessions: [activeSession],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/sessions`, {
+      headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+    });
+  });
+
+  it("accepts an empty session list", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ sessions: [] }), { status: 200 }),
+    );
+    await expect(getOperatorSessions("access-token")).resolves.toEqual({ sessions: [] });
+  });
+
+  it("rejects malformed session list responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ sessions: [{ id: 501 }] }), { status: 200 }),
+    );
+    await expect(getOperatorSessions("access-token")).rejects.toThrow("incomplete or malformed");
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+  ])("surfaces %i session responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(getOperatorSessions("access-token")).rejects.toMatchObject({ status, code });
+  });
+
+  it("surfaces session network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getOperatorSessions("access-token")).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the operator service.",
     } satisfies Partial<AuthApiError>);

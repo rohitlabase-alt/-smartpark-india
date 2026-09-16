@@ -8,12 +8,14 @@ import {
   type Operator,
   type OperatorRegisterRequest,
   type ParkingFacility,
+  type ParkingSessionListResponse,
   type ParkingSlot,
   type Reservation,
   type UpdateFacilityRequest,
   type UpdateSlotRequest,
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
+import { isParkingSession } from "./sessions";
 
 function isOperator(value: unknown): value is Operator {
   if (!value || typeof value !== "object") return false;
@@ -114,6 +116,15 @@ function isBookingListResponse(value: unknown): value is BookingListResponse {
     typeof value === "object" &&
     Array.isArray((value as { reservations?: unknown }).reservations) &&
     (value as { reservations: unknown[] }).reservations.every(isReservation)
+  );
+}
+
+function isParkingSessionListResponse(value: unknown): value is ParkingSessionListResponse {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as { sessions?: unknown }).sessions) &&
+    (value as { sessions: unknown[] }).sessions.every(isParkingSession)
   );
 }
 
@@ -276,6 +287,16 @@ export async function getOperatorReservations(accessToken: string): Promise<Book
   const body = await request("/operators/me/reservations", accessToken);
   if (!isBookingListResponse(body)) {
     throw new AuthApiError("The operator reservations response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function getOperatorSessions(
+  accessToken: string,
+): Promise<ParkingSessionListResponse> {
+  const body = await request("/operators/me/sessions", accessToken);
+  if (!isParkingSessionListResponse(body)) {
+    throw new AuthApiError("The operator sessions response was incomplete or malformed.");
   }
   return body;
 }

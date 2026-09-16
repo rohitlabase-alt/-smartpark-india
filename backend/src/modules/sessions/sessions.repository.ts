@@ -150,6 +150,57 @@ export async function findSessionForAccess(
 }
 
 /**
+ * Looks up the most recent session for a reservation by its booking code,
+ * enforcing the same ownership the other access paths use: the caller must be
+ * the reservation owner or the facility operator. Used by the user "active
+ * session" resume path and the operator by-reference check (Phase 9 Block 2).
+ * a reservation with no session yet yields undefined, which the caller
+ * surfaces as 404 SESSION_NOT_FOUND (no existence disclosure).
+ */
+export async function findSessionByReservationForAccess(
+  target: Queryable,
+  reservationCode: string,
+  userId: number,
+  operatorId: number | null,
+): Promise<ParkingSessionRow | undefined> {
+  const { rows } = await target.query<ParkingSessionResult>(
+    `SELECT ${SELECT_COLUMNS_QUALIFIED}
+     FROM parking_sessions s
+     JOIN reservations r ON r.id = s.reservation_id AND r.deleted_at IS NULL
+     LEFT JOIN parking_facilities f ON f.id = s.facility_id AND f.deleted_at IS NULL
+     WHERE r.reservation_code = $1
+       AND (
+         r.user_id = $2
+         OR ($3::bigint IS NOT NULL AND f.operator_id = $3)
+       )
+     ORDER BY s.entry_at DESC, s.id DESC
+     LIMIT 1`,
+    [reservationCode, userId, operatorId],
+  );
+  return rows[0] ? mapSession(rows[0]) : undefined;
+}
+
+/**
+ * Lists sessions across an operator's facilities, newest entry first. Powers
+ * the operator "active parking sessions" panel (Phase 9 Block 2); the caller
+ * (sessionsService.listSessionsForOperator) already verified the operator.
+ */
+export async function listSessionsForOperator(
+  target: Queryable,
+  operatorId: number,
+): Promise<ParkingSessionRow[]> {
+  const { rows } = await target.query<ParkingSessionResult>(
+    `SELECT ${SELECT_COLUMNS_QUALIFIED}
+     FROM parking_sessions s
+     JOIN parking_facilities f ON f.id = s.facility_id AND f.deleted_at IS NULL
+     WHERE f.operator_id = $1
+     ORDER BY s.entry_at DESC, s.id DESC`,
+    [operatorId],
+  );
+  return rows.map(mapSession);
+}
+
+/**
  * Inserts a parking session on the given client. The entry_token_hash is the
  * SHA-256 digest of a high-entropy bearer token — the raw token is never
  * stored at rest (docs/DATABASE.md §2.13, docs/SECURITY.md).

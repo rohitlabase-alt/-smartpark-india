@@ -134,6 +134,30 @@ export async function getParkingSession(
   return body;
 }
 
+/**
+ * Resumes the most recent session for a booking code (owner or facility
+ * operator). Lets a driver reload the app and still see/exit their active
+ * session, and lets an operator confirm a vehicle's on-site state. The entry
+ * token is never returned by this read.
+ */
+export async function getParkingSessionByReservation(
+  accessToken: string,
+  reservationCode: string,
+): Promise<ParkingSessionResponse> {
+  const body = await requestJson(
+    `/parking-sessions/by-reservation/${encodeURIComponent(reservationCode)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+    "Unable to reach the parking session service.",
+    "Unable to load the parking session.",
+  );
+
+  if (!isParkingSessionResponse(body)) {
+    throw new AuthApiError("The parking session response was incomplete or malformed.");
+  }
+
+  return body;
+}
+
 export async function exitParking(
   accessToken: string,
   sessionId: number,

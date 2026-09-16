@@ -448,6 +448,11 @@ export interface ParkingSessionResponse {
   session: ParkingSession;
 }
 
+/** Operator-scoped session listing (Phase 9 Block 2, /operators/me/sessions). */
+export interface ParkingSessionListResponse {
+  sessions: ParkingSession[];
+}
+
 // ---------------------------------------------------------------------------
 // Audit trail (docs/DATABASE.md §2.23, docs/API_SPEC.md §2 admin — Phase 8,
 // Part 4). Audit events are server-generated, append-only records of admin and
