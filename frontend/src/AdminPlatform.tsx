@@ -31,6 +31,8 @@ const ACTION_LABELS: Record<AuditEventAction, string> = {
   RESERVATION_CANCELLED: "Reservation cancelled",
   PAYMENT_INITIATED: "Payment initiated",
   PAYMENT_VERIFIED: "Payment verified",
+  PARKING_SESSION_ENTRY: "Parking entry",
+  PARKING_SESSION_EXIT: "Parking exit",
 };
 
 const PAGE_LIMIT_OPTIONS = [10, 20, 50];

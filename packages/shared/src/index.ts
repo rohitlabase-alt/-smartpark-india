@@ -416,6 +416,39 @@ export interface VerifyPaymentResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Parking sessions (docs/DATABASE.md §2.13, Phase 9)
+// ---------------------------------------------------------------------------
+
+export const PARKING_SESSION_STATUSES = ["ACTIVE", "COMPLETED", "CANCELLED"] as const;
+export type ParkingSessionStatus = (typeof PARKING_SESSION_STATUSES)[number];
+
+export interface ParkingSession {
+  id: number;
+  reservationId: number;
+  facilityId: number;
+  slotId: number;
+  userId: number;
+  entryAt: string;
+  exitAt: string | null;
+  status: ParkingSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ParkingSessionEntryRequest {
+  reservationCode: string;
+}
+
+export interface ParkingSessionEntryResponse {
+  session: ParkingSession;
+  entryToken: string;
+}
+
+export interface ParkingSessionResponse {
+  session: ParkingSession;
+}
+
+// ---------------------------------------------------------------------------
 // Audit trail (docs/DATABASE.md §2.23, docs/API_SPEC.md §2 admin — Phase 8,
 // Part 4). Audit events are server-generated, append-only records of admin and
 // platform actions. actors come from the authenticated server-side session.
@@ -443,6 +476,8 @@ export const AUDIT_ACTIONS = [
   "RESERVATION_CANCELLED",
   "PAYMENT_INITIATED",
   "PAYMENT_VERIFIED",
+  "PARKING_SESSION_ENTRY",
+  "PARKING_SESSION_EXIT",
 ] as const;
 export type AuditEventAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -454,6 +489,7 @@ export const AUDIT_ENTITY_TYPES = [
   "RESERVATION",
   "PAYMENT",
   "USER",
+  "PARKING_SESSION",
 ] as const;
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
 

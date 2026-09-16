@@ -39,7 +39,7 @@ parking_facilities 1──n api_integrations
 users 1──n reservations
 parking_facilities 1──n reservations
 parking_slots     1──n reservations
-reservations 1──1 parking_sessions
+reservations 1──n parking_sessions   (max one ACTIVE per reservation, over time n total)
 reservations 1──n payments
 reservations 1──1 (or n) parking_tokens
 reservations 1──n transactions
@@ -236,14 +236,26 @@ Constraint: no overlapping PENDING_PAYMENT/CONFIRMED/ACTIVE reservations on the 
 | column | type | notes |
 |---|---|---|
 | id | BIGSERIAL PK | |
-| reservation_id FK UNIQUE | 1-1 with reservation |
-| entered_at | TIMESTAMPTZ NULL | |
-| exited_at | TIMESTAMPTZ NULL | |
-| entry_by | FK users NULL | gate staff/operator |
-| exit_by | FK users NULL | |
-| entry_override_reason | TEXT NULL | manual override |
-| exit_override_reason | TEXT NULL | |
-| status | VARCHAR(24) | RESERVED/ACTIVE/COMPLETED/ABANDONED |
+| reservation_id FK | | RESTRICT |
+| facility_id FK | | RESTRICT — snapshot of the reservation's facility |
+| slot_id FK | | RESTRICT — snapshot of the reservation's slot |
+| user_id FK | | RESTRICT — the reservation owner |
+| entry_token_hash | VARCHAR(64) NOT NULL UNIQUE | SHA-256 digest of the one-time bearer entry token ($2.13 security note); the raw token is never stored |
+| entry_at | TIMESTAMPTZ NOT NULL DEFAULT now() | set at entry |
+| exit_at | TIMESTAMPTZ NULL | set at exit |
+| status | VARCHAR(24) | ACTIVE/COMPLETED/CANCELLED (CANCELLED is reserved for a future operator cancellation path) |
+| created_at / updated_at | | |
+
+Lifecycle: a paid **CONFIRMED** reservation enters → session `ACTIVE`, reservation → `ACTIVE`, slot → `OCCUPIED`; exiting → session `COMPLETED`, reservation → `COMPLETED`, slot → `AVAILABLE`. Source of truth for occupancy is **`parking_slots.status`**; the session row is a ledger of the lifecycle (`availability_state` is mirrored to match).
+
+Uniqueness (partial, so the same reservation can have multiple sessions **over time**, but only ever **one active** at a time, migration `0009`):
+- `parking_sessions_active_reservation_idx` — UNIQUE `(reservation_id) WHERE status = 'ACTIVE'` (single active session per reservation; double-entry defense in depth)
+- `parking_sessions_active_slot_idx` — UNIQUE `(slot_id) WHERE status = 'ACTIVE'` (no two active sessions on the same slot)
+- `parking_sessions_entry_token_hash_idx` — UNIQUE `(entry_token_hash)`
+
+Indexes: `(facility_id, status)`, `(user_id)`, `(slot_id)`.
+
+> **Phase 9 Block 1 implementation (migration `0009`, D-037):** table implemented with the columns above. Entry: `POST /parking-sessions/entry` (auth + reservation owner OR VERIFIED facility operator) generates a high-entropy `ses_<48 hex>` bearer token, persists only its SHA-256 hash, transitions reservation `CONFIRMED → ACTIVE`, slot → `OCCUPIED` (guarded UPDATE over `AVAILABLE`/`RESERVED`, race-safe), mirrors the availability cache, and writes a `PARKING_SESSION_ENTRY` audit record — all in one transaction. Exit: `POST /parking-sessions/:id/exit` completes the session (`ACTIVE → COMPLETED`), releases the slot (`OCCUPIED → AVAILABLE`, preserving operator-set statuses), reservation `ACTIVE → COMPLETED`, availability cache re-mirrored, `PARKING_SESSION_EXIT` audit record. `GET /parking-sessions/:id` is owner/operator-scoped (SQL-enforced, 404 on miss). The single-active-session invariants are also enforced at the DB level by the two partial UNIQUE indexes above.
 
 ### 2.14 parking_tokens
 
@@ -442,6 +454,7 @@ Lifecycle:
 - parking_facilities(parking_id) unique, (city), (type), (verification_status), geospatial
 - parking_slots(slot_code) unique, (facility_id, status)
 - reservations(reservation_code) unique, (user_id), (facility_id, starts_at), partial (slot_id, state)
+- parking_sessions(entry_token_hash) unique, partial active (reservation_id) / active (slot_id), (facility_id, status), (user_id), (slot_id)
 - parking_tokens(token_id) unique
 - documents(operator_id), (parking_id), (verification_status), (document_id) unique
 - bookings ONLOOKUP: partial indexes for pending payment cleanup

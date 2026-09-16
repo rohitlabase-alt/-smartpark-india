@@ -8,6 +8,7 @@ import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
 import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
 import { buildPaymentsRouter } from "./modules/payments/payments.routes.js";
+import { sessionsRouter } from "./modules/sessions/sessions.routes.js";
 import { errorHandler, notFoundHandler } from "./http/error-handler.js";
 import { config } from "./config.js";
 
@@ -112,6 +113,9 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   // Payments (Phase 7 mock payment): /payments (auth required)
   app.use("/api/v1/payments", buildPaymentsRouter());
+
+  // Parking sessions (Phase 9 Block 1): /parking-sessions (auth required)
+  app.use("/api/v1/parking-sessions", sessionsRouter);
 
   // JSON 404 for unknown routes.
   app.use(notFoundHandler);

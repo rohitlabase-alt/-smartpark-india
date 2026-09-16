@@ -113,6 +113,19 @@ Transport: HTTPS (REST) + WebSocket (`/ws`) with HTTP polling fallback.
 > - `POST /payments/initiate { reservationCode, [Idempotency-Key] }` → `200 { payment }`. Reserved when the reservation is `PENDING_PAYMENT` and has a non-zero `amount`; otherwise `409 PAYMENT_NOT_PENDING` / `409 PAYMENT_UNAVAILABLE`. The provider (`MOCK`) derives a deterministic `providerTxnId` (`MOCK-<code>-<amount>`). A repeat with the same `Idempotency-Key` reuses the existing payment (no duplicate attempt; key TTL 15 min).
 > - `POST /payments/{txnId}/verify` → `200 { payment, reservation }`. `MOCK` verification: `providerTxnId` ending in `__FAIL__` → `FAILED`, otherwise `SUCCESS`. SUCCESS is atomic: payment → `SUCCESS`, reservation → `CONFIRMED` (`paymentStatus: "SUCCESS"`, `confirmedAt` set), one `CHARGE`/`SUCCESS` ledger transaction — all in a single DB transaction. FAILED is atomic too: payment → `FAILED`, reservation → `FAILED` (never CONFIRMED), one `CHARGE`/`FAILED` transaction. Re-verifying a SUCCESS payment is idempotent; re-verifying a FAILED one → `409 PAYMENT_ALREADY_FAILED`; verifying when the reservation is no longer pending → `409 RESERVATION_NOT_CONFIRMABLE` (the whole verification rolls back).
 
+### parking-sessions
+| method | path | role | description |
+|---|---|---|---|
+| POST | /parking-sessions/entry | user/operator | enter: paid CONFIRMED reservation → ACTIVE session (mints one-time bearer entry token) |
+| GET | /parking-sessions/{id} | user/operator | session detail (owner or facility operator) |
+| POST | /parking-sessions/{id}/exit | user/operator | exit: ACTIVE → COMPLETED, release slot |
+
+> **Implementation status (Phase 9, Block 1):** all three endpoints are **implemented** (mounted at `/api/v1/parking-sessions`, authenticated, authorization enforced server-side — the reservation owner OR the VERIFIED operator who owns the facility; any other caller gets `404`, no existence disclosure).
+>
+> - `POST /parking-sessions/entry { reservationCode }` → `201 { session, entryToken }`. Requires a `CONFIRMED` (paid) reservation; otherwise `409 RESERVATION_NOT_ENTRYABLE`. The reservation's facility must be `VERIFIED` + active (`409 FACILITY_NOT_ENTRYABLE`) and the reservation must have an assigned slot (`409 SLOT_NOT_ASSIGNED`). Entry is atomic: reservation → `ACTIVE`, slot → `OCCUPIED` (guarded `AVAILABLE`/`RESERVED` update — `409 SLOT_OCCUPIED` if already taken), availability cache mirrored, `PARKING_SESSION_ENTRY` audit record written. The `entryToken` (`ses_<48 hex>`) is a high-entropy one-time bearer credential returned **only** by this call; only its SHA-256 digest is stored, and it never appears in audit metadata (safe for a future QR/gate flow). Double entry → `409 SESSION_ALREADY_ACTIVE`.
+> - `POST /parking-sessions/{id}/exit` → `200 { session }`. Exiting a non-active session → `409 SESSION_NOT_ACTIVE`. Atomic: session → `COMPLETED`, slot → `AVAILABLE` (operator-set statuses preserved), reservation → `COMPLETED`, availability cache mirrored, `PARKING_SESSION_EXIT` audit record.
+> - `GET /parking-sessions/{id}` → `200 { session }`. Never returns an entry token. The session id is a lookup identifier, never a security credential — authorization is enforced server-side.
+
 ### operators
 | method | path | role | description |
 |---|---|---|---|
