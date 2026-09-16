@@ -6,6 +6,7 @@ import {
   type CreateSlotRequest,
   type FacilityType,
   type Operator,
+  type OperatorStatus,
   type ParkingFacility,
   type ParkingSlot,
   type ParkingSlotStatus,
@@ -28,13 +29,24 @@ import { AuthApiError } from "./api/auth";
 
 type LoadState = "loading" | "success" | "error";
 
-function operatorError(cause: unknown): string {
+function operatorVerificationMessage(status: OperatorStatus | undefined): string {
+  if (status === "PENDING") return "Your operator account is waiting for admin verification.";
+  if (status === "UNDER_REVIEW") return "Your operator account is currently under review.";
+  if (status === "REJECTED")
+    return "Your operator account was rejected. Please contact SmartPark support.";
+  return "Your account is not authorized to access operator data.";
+}
+
+function operatorError(cause: unknown, verificationStatus?: OperatorStatus): string {
   if (cause instanceof AuthApiError) {
     if (cause.status === 401)
       return "Your operator session is no longer authorized. Please sign in again.";
     if (cause.code === "ACCOUNT_INACTIVE")
       return "Your operator account is inactive and cannot create facilities.";
-    if (cause.status === 403) return "Your account is not authorized to access operator data.";
+    if (cause.status === 403 && cause.code === "OPERATOR_NOT_VERIFIED" && verificationStatus) {
+      return operatorVerificationMessage(verificationStatus);
+    }
+    if (cause.status === 403) return operatorVerificationMessage(verificationStatus);
     return cause.message;
   }
   return cause instanceof Error ? cause.message : "Unable to load operator data.";
@@ -113,6 +125,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [cancellationSuccess, setCancellationSuccess] = useState("");
   const cancellationRequestId = useRef(0);
   const reservationsRefreshRequestId = useRef(0);
+  const operatorVerificationRef = useRef<OperatorStatus>();
   const [createOpen, setCreateOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -200,6 +213,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       (result) => {
         if (!active) return;
         setOperator(result);
+        operatorVerificationRef.current = result.verificationStatus;
         setOperatorState("success");
       },
       (cause: unknown) => {
@@ -219,7 +233,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       (cause: unknown) => {
         if (!active) return;
         setFacilitiesState("error");
-        setFacilitiesError(operatorError(cause));
+        setFacilitiesError(operatorError(cause, operatorVerificationRef.current));
       },
     );
 
@@ -232,7 +246,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       (cause: unknown) => {
         if (!active) return;
         setReservationsState("error");
-        setReservationsError(operatorError(cause));
+        setReservationsError(operatorError(cause, operatorVerificationRef.current));
       },
     );
 
@@ -262,7 +276,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       (cause: unknown) => {
         if (!active) return;
         setSlotsState("error");
-        setSlotsError(operatorError(cause));
+        setSlotsError(operatorError(cause, operatorVerificationRef.current));
       },
     );
     return () => {
@@ -489,7 +503,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setSlotReservationsEnabled("");
     } catch (cause) {
       if (requestId !== slotCreateRequestId.current) return;
-      setSlotCreateError(operatorError(cause));
+      setSlotCreateError(operatorError(cause, operator?.verificationStatus));
     } finally {
       if (requestId === slotCreateRequestId.current) setSlotCreateSubmitting(false);
     }
@@ -532,7 +546,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       );
     } catch (cause) {
       if (requestId !== slotEditRequestId.current) return;
-      setSlotEditError(operatorError(cause));
+      setSlotEditError(operatorError(cause, operator?.verificationStatus));
     } finally {
       if (requestId === slotEditRequestId.current) setSlotEditSubmitting(false);
     }
@@ -594,7 +608,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setEditSuccess(`${updated.name} was updated successfully.`);
     } catch (cause) {
       if (requestId !== facilityEditRequestId.current) return;
-      setEditError(operatorError(cause));
+      setEditError(operatorError(cause, operator?.verificationStatus));
     } finally {
       if (requestId === facilityEditRequestId.current) setEditSubmitting(false);
     }
@@ -660,7 +674,7 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setFacilityCapacity("");
       setFacilityDescription("");
     } catch (cause) {
-      setCreateError(operatorError(cause));
+      setCreateError(operatorError(cause, operator?.verificationStatus));
     } finally {
       setCreateSubmitting(false);
     }

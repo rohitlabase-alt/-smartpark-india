@@ -154,7 +154,21 @@ async function createFacility(token: string): Promise<ParkingFacility> {
     token,
   );
   expect(status).toBe(201);
-  return body as ParkingFacility;
+  const facility = body as ParkingFacility;
+  const admin = await registerAdminSession(`${facility.parkingId}-approval`);
+  const review = await jsonPost(
+    `/api/v1/admin/facilities/${facility.id}/review`,
+    {},
+    admin.accessToken,
+  );
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(
+    `/api/v1/admin/facilities/${facility.id}/approve`,
+    {},
+    admin.accessToken,
+  );
+  expect(approve.status).toBe(200);
+  return facility;
 }
 
 async function createSlot(

@@ -30,7 +30,7 @@ function isOperator(value: unknown): value is Operator {
   );
 }
 
-function isFacility(value: unknown): value is ParkingFacility {
+export function isFacility(value: unknown): value is ParkingFacility {
   if (!value || typeof value !== "object") return false;
   const facility = value as Partial<ParkingFacility>;
   return (

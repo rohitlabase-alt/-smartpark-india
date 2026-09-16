@@ -30,11 +30,13 @@ export interface FacilityRow {
   isActive: boolean;
   isDemo: boolean;
   pricing: unknown;
+  approvedBy: number | null;
+  approvedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
-interface FacilityResult {
+export interface FacilityResult {
   id: string;
   parking_id: string;
   name: string;
@@ -54,6 +56,8 @@ interface FacilityResult {
   is_active: boolean;
   is_demo: boolean;
   pricing: unknown;
+  approved_by: string | null;
+  approved_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -79,6 +83,8 @@ function mapFacility(row: FacilityResult): FacilityRow {
     isActive: row.is_active,
     isDemo: row.is_demo,
     pricing: row.pricing,
+    approvedBy: row.approved_by === null ? null : Number(row.approved_by),
+    approvedAt: row.approved_at === null ? null : row.approved_at.toISOString(),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -104,6 +110,8 @@ export function toFacilityDto(row: FacilityRow): ParkingFacility {
     availabilityMode: row.availabilityMode,
     isActive: row.isActive,
     isDemo: row.isDemo,
+    approvedBy: row.approvedBy,
+    approvedAt: row.approvedAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -112,7 +120,8 @@ export function toFacilityDto(row: FacilityRow): ParkingFacility {
 const SELECT_COLUMNS = `
   id, parking_id, name, description, type, country, state, city, area, address,
   latitude, longitude, operator_id, capacity, verification_status,
-  availability_mode, is_active, is_demo, pricing, created_at, updated_at`;
+  availability_mode, is_active, is_demo, pricing, approved_by, approved_at,
+  created_at, updated_at`;
 
 export const facilitiesRepository = {
   async create(input: {

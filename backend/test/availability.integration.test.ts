@@ -198,6 +198,13 @@ async function createSlot(
 
 const SLOTS_PATH = (facilityId: number) => `/api/v1/operators/me/facilities/${facilityId}/slots`;
 
+async function approveFacility(adminToken: string, facilityId: number): Promise<void> {
+  const review = await jsonPost(`/api/v1/admin/facilities/${facilityId}/review`, {}, adminToken);
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(`/api/v1/admin/facilities/${facilityId}/approve`, {}, adminToken);
+  expect(approve.status).toBe(200);
+}
+
 beforeAll(async () => {
   await ensureDatabase();
   await resetSchema();
@@ -485,6 +492,8 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   it("serves correct totals and breakdown derived from slot engine state", async () => {
     const operator = await registerVerifiedOperatorSession("av-op");
     const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("av-op-admin");
+    await approveFacility(admin.accessToken, facility.id);
 
     await createSlot(operator.accessToken, facility.id, { slotCode: "E01" }); // AVAILABLE
     const e02 = await createSlot(operator.accessToken, facility.id, { slotCode: "E02" }); // AVAILABLE
@@ -524,6 +533,8 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   it("empty availability: no slots → all zeros, not live, LOW confidence, no sources", async () => {
     const operator = await registerVerifiedOperatorSession("av-empty");
     const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("av-empty-admin");
+    await approveFacility(admin.accessToken, facility.id);
 
     const res = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
     expect(res.status).toBe(200);
@@ -538,6 +549,8 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
   it("soft-deleted slots are excluded from the total", async () => {
     const operator = await registerVerifiedOperatorSession("av-deleted");
     const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("av-deleted-admin");
+    await approveFacility(admin.accessToken, facility.id);
     await createSlot(operator.accessToken, facility.id, { slotCode: "F01" });
     const f02 = await createSlot(operator.accessToken, facility.id, { slotCode: "F02" });
 
@@ -549,6 +562,52 @@ describe("Public availability read (docs/API_SPEC.md §3)", () => {
     const body = res.body as FacilityAvailabilityResponse;
     expect(body.totalSlots).toBe(1);
     expect(body.slots.map((s) => s.slotCode)).toEqual(["F01"]);
+  });
+});
+
+describe("Facility verification gating (public availability)", () => {
+  it("returns 404 for a PENDING facility and 200 after admin approval", async () => {
+    const operator = await registerVerifiedOperatorSession("verify-gate-avail");
+    const facility = await createFacility(operator.accessToken);
+    expect(facility.verificationStatus).toBe("PENDING");
+
+    await createSlot(operator.accessToken, facility.id, { slotCode: "V01" });
+
+    const admin = await registerAdminSession("verify-gate-avail-admin");
+
+    const before = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
+    expect(before.status).toBe(404);
+
+    await approveFacility(admin.accessToken, facility.id);
+
+    const after = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
+    expect(after.status).toBe(200);
+    const body = after.body as FacilityAvailabilityResponse;
+    expect(body.facilityId).toBe(facility.parkingId);
+    expect(body.totalSlots).toBe(1);
+  });
+
+  it("returns 404 for a REJECTED facility", async () => {
+    const operator = await registerVerifiedOperatorSession("verify-gate-rejected");
+    const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("verify-gate-rejected-admin");
+
+    const review = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(review.status).toBe(200);
+
+    const rejectRes = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/reject`,
+      {},
+      admin.accessToken,
+    );
+    expect(rejectRes.status).toBe(200);
+
+    const res = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
+    expect(res.status).toBe(404);
   });
 });
 

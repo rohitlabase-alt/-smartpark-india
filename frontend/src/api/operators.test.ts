@@ -47,6 +47,8 @@ const facility: ParkingFacility = {
   availabilityMode: "MANUAL",
   isActive: true,
   isDemo: false,
+  approvedBy: null,
+  approvedAt: null,
   createdAt: "2026-09-01T10:00:00.000Z",
   updatedAt: "2026-09-01T10:00:00.000Z",
 };

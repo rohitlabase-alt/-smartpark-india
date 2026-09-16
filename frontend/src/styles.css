@@ -794,6 +794,183 @@ button:disabled {
   font-size: 0.75rem;
 }
 
+/* ── Admin surfaces (operator verification + facility control) ───────────── */
+
+.reservation-status.state-pending {
+  color: #855f0b;
+  background: var(--warning);
+}
+.reservation-status.state-under_review {
+  color: #0d4d3a;
+  background: #dcefe5;
+}
+.reservation-status.state-verified,
+.reservation-status.state-active {
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
+.reservation-status.state-rejected {
+  color: #9d3124;
+  background: var(--danger);
+}
+.reservation-status.state-inactive {
+  color: var(--muted);
+  background: #e6ece8;
+}
+
+.admin-section-switch {
+  display: inline-flex;
+  gap: 0.35rem;
+  margin-top: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  padding: 0.25rem;
+  background: #eef3ef;
+}
+.admin-section-tab {
+  border-radius: 0.7rem;
+  padding: 0.5rem 0.9rem;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.8rem;
+}
+.admin-section-tab:hover:not(:disabled) {
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
+.admin-section-tab.selected {
+  color: var(--brand-dark);
+  background: white;
+}
+
+.admin-status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 1.25rem 0 0;
+  border: 0;
+  padding: 0;
+}
+.admin-status-tabs legend {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.admin-status-tab {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  color: var(--muted);
+  background: white;
+  font-size: 0.78rem;
+}
+.admin-status-tab:hover:not(:disabled) {
+  border-color: var(--soft-brand);
+  color: var(--brand-dark);
+  background: var(--soft-brand);
+}
+.admin-status-tab.selected {
+  border-color: var(--brand);
+  color: white;
+  background: var(--brand);
+}
+
+.admin-status-region {
+  margin-top: 1rem;
+}
+
+.admin-operator-list,
+.admin-facility-list {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-operator-card,
+.admin-facility-card {
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  padding: 1.25rem;
+  background: var(--card);
+  box-shadow: 0 14px 35px rgba(26, 58, 44, 0.05);
+}
+.admin-operator-card-heading,
+.admin-facility-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.admin-facility-card-heading strong,
+.admin-operator-card-heading strong {
+  font-size: 1.05rem;
+}
+.admin-facility-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
+.admin-operator-details,
+.admin-facility-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 1.5rem;
+  margin: 1rem 0 0;
+}
+.admin-operator-details div,
+.admin-facility-details div {
+  display: grid;
+  gap: 0.2rem;
+}
+.admin-operator-details dt,
+.admin-facility-details dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.admin-operator-details dd,
+.admin-facility-details dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  word-break: break-word;
+}
+.admin-operator-actions,
+.admin-facility-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.admin-facility-actions button,
+.admin-operator-actions button {
+  padding: 0.6rem 0.9rem;
+  font-size: 0.82rem;
+}
+.admin-reject-button,
+.admin-facility-reject-button {
+  color: #9d3124;
+  background: var(--danger);
+}
+.admin-reject-button:hover:not(:disabled),
+.admin-facility-reject-button:hover:not(:disabled) {
+  background: #f5ddd9;
+}
+.admin-facility-deactivate-button {
+  color: var(--muted);
+  background: #e6ece8;
+}
+.admin-facility-deactivate-button:hover:not(:disabled) {
+  color: var(--ink);
+  background: #d4ddd8;
+}
+
 @media (max-width: 680px) {
   .shell {
     padding-inline: 1rem;
@@ -823,6 +1000,18 @@ button:disabled {
   }
   .reservation-detail-list {
     grid-template-columns: 1fr;
+  }
+  .admin-operator-details,
+  .admin-facility-details {
+    grid-template-columns: 1fr;
+  }
+  .admin-operator-card-heading,
+  .admin-facility-card-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .admin-facility-badges {
+    justify-content: flex-start;
   }
   .reservation-creation-heading {
     align-items: flex-start;

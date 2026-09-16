@@ -141,7 +141,9 @@ describe("public availability screen", () => {
       new Response(JSON.stringify({ error: { message: "Facility not found" } }), { status: 404 }),
     );
     await submitFacilityId("999");
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Facility not found");
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "This parking facility is currently unavailable.",
+    );
 
     fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
     await submitFacilityId("1");

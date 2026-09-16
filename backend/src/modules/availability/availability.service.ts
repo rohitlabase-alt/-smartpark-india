@@ -30,7 +30,7 @@ export const availabilityService = {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");
     }
     const facility = await facilitiesRepository.findById(facilityId);
-    if (!facility || !facility.isActive) {
+    if (!facility || !facility.isActive || facility.verificationStatus !== "VERIFIED") {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");
     }
 

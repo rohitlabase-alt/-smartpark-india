@@ -154,6 +154,8 @@ export interface ParkingFacility {
   availabilityMode: AvailabilityMode;
   isActive: boolean;
   isDemo: boolean;
+  approvedBy: number | null;
+  approvedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

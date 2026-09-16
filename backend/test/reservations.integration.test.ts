@@ -202,6 +202,13 @@ const WINDOW = (facilityId: number, slotId: number | undefined, dayOffset = 1) =
   endsAt: `2026-09-${String(10 + dayOffset).padStart(2, "0")}T10:00:00Z`,
 });
 
+async function approveFacility(adminToken: string, facilityId: number): Promise<void> {
+  const review = await jsonPost(`/api/v1/admin/facilities/${facilityId}/review`, {}, adminToken);
+  expect(review.status).toBe(200);
+  const approve = await jsonPost(`/api/v1/admin/facilities/${facilityId}/approve`, {}, adminToken);
+  expect(approve.status).toBe(200);
+}
+
 function errorCode(body: unknown): string {
   return (body as { error: { code: string } }).error.code;
 }
@@ -311,6 +318,8 @@ describe("POST /api/v1/reservations — creation", () => {
     operator = await registerVerifiedOperatorSession("bk-op");
     userA = await registerSession("bk-userA");
     facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("bk-admin");
+    await approveFacility(admin.accessToken, facility.id);
     slots = [];
     slots.push(await createSlot(operator.accessToken, facility.id, { slotCode: "2C-S1" }));
     slots.push(await createSlot(operator.accessToken, facility.id, { slotCode: "2C-S2" }));
@@ -439,6 +448,8 @@ describe("GET /api/v1/reservations — own list + detail (IDOR)", () => {
     userB = await registerSession("list-userB");
     operator = await registerVerifiedOperatorSession("list-op");
     facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("list-admin");
+    await approveFacility(admin.accessToken, facility.id);
     slot = await createSlot(operator.accessToken, facility.id);
     const created = await createBooking(userA.accessToken, WINDOW(facility.id, slot.id));
     expect(created.status).toBe(201);
@@ -524,6 +535,8 @@ describe("Phase 7 regression — complete reservation response shape + lifecycle
     user = await registerSession("shape-user");
     operator = await registerVerifiedOperatorSession("shape-op");
     facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("shape-admin");
+    await approveFacility(admin.accessToken, facility.id);
     slot = await createSlot(operator.accessToken, facility.id);
   });
 
@@ -652,6 +665,10 @@ describe("GET /api/v1/operators/me/reservations — operator scope", () => {
     facilityA1 = await createFacility(operatorA.accessToken);
     facilityA2 = await createFacility(operatorA.accessToken);
     facilityB = await createFacility(operatorB.accessToken);
+    const admin = await registerAdminSession("reservation-list-admin");
+    await approveFacility(admin.accessToken, facilityA1.id);
+    await approveFacility(admin.accessToken, facilityA2.id);
+    await approveFacility(admin.accessToken, facilityB.id);
 
     const old = await createBooking(regularUser.accessToken, WINDOW(facilityA1.id, undefined, 10));
     const middle = await createBooking(
@@ -734,6 +751,8 @@ describe("POST /api/v1/reservations/:code/cancel", () => {
     userB = await registerSession("cancel-userB");
     operator = await registerVerifiedOperatorSession("cancel-op");
     facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("cancel-admin");
+    await approveFacility(admin.accessToken, facility.id);
     slot = await createSlot(operator.accessToken, facility.id);
   });
 
@@ -800,6 +819,10 @@ describe("POST /api/v1/operators/me/reservations/:reservationCode/cancel", () =>
     facilityA1 = await createFacility(operatorA.accessToken);
     facilityA2 = await createFacility(operatorA.accessToken);
     facilityB = await createFacility(operatorB.accessToken);
+    const admin = await registerAdminSession("op-cancel-admin");
+    await approveFacility(admin.accessToken, facilityA1.id);
+    await approveFacility(admin.accessToken, facilityA2.id);
+    await approveFacility(admin.accessToken, facilityB.id);
   });
 
   async function makeBooking(facilityId: number, dayOffset: number): Promise<string> {
@@ -953,6 +976,8 @@ describe("Concurrency / rollback safety", () => {
     const userB = await registerSession("conc-userB");
     const operator = await registerVerifiedOperatorSession("conc-op");
     const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("conc-admin");
+    await approveFacility(admin.accessToken, facility.id);
     const slot = await createSlot(operator.accessToken, facility.id);
 
     const body = WINDOW(facility.id, slot.id);
@@ -972,5 +997,52 @@ describe("Concurrency / rollback safety", () => {
       [slot.id],
     );
     expect(Number(rows[0]!.n)).toBe(1);
+  });
+});
+
+describe("Facility verification gating (booking creation)", () => {
+  it("rejects booking for a PENDING facility and succeeds after admin approval", async () => {
+    const operator = await registerVerifiedOperatorSession("verify-gate-book-op");
+    const user = await registerSession("verify-gate-book-user");
+    const facility = await createFacility(operator.accessToken);
+    expect(facility.verificationStatus).toBe("PENDING");
+    const slot = await createSlot(operator.accessToken, facility.id);
+
+    const admin = await registerAdminSession("verify-gate-book-admin");
+
+    const before = await createBooking(user.accessToken, WINDOW(facility.id, slot.id));
+    expect(before.status).toBe(404);
+    expect(errorCode(before.body)).toBe("FACILITY_NOT_FOUND");
+
+    await approveFacility(admin.accessToken, facility.id);
+
+    const after = await createBooking(user.accessToken, WINDOW(facility.id, slot.id));
+    expect(after.status).toBe(201);
+    expect((after.body as BookingResponse).reservation.state).toBe("PENDING_PAYMENT");
+  });
+
+  it("rejects booking for a REJECTED facility", async () => {
+    const operator = await registerVerifiedOperatorSession("verify-gate-book-rejected-op");
+    const user = await registerSession("verify-gate-book-rejected-user");
+    const facility = await createFacility(operator.accessToken);
+    const slot = await createSlot(operator.accessToken, facility.id);
+
+    const admin = await registerAdminSession("verify-gate-book-rejected-admin");
+    const review = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(review.status).toBe(200);
+    const reject = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/reject`,
+      {},
+      admin.accessToken,
+    );
+    expect(reject.status).toBe(200);
+
+    const res = await createBooking(user.accessToken, WINDOW(facility.id, slot.id));
+    expect(res.status).toBe(404);
+    expect(errorCode(res.body)).toBe("FACILITY_NOT_FOUND");
   });
 });

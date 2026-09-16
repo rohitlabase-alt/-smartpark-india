@@ -95,7 +95,7 @@ export const bookingsService = {
     }
 
     const facility = await facilitiesRepository.findById(input.facilityId);
-    if (!facility || !facility.isActive) {
+    if (!facility || !facility.isActive || facility.verificationStatus !== "VERIFIED") {
       throw notFound("FACILITY_NOT_FOUND", "Parking facility not found");
     }
 

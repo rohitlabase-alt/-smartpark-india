@@ -19,7 +19,7 @@ import AdminDashboard from "./AdminDashboard";
 import PlaceholderBanner from "./components/PlaceholderBanner";
 import OperatorDashboard from "./OperatorDashboard";
 import OperatorRegistration from "./OperatorRegistration";
-import { fetchFacilityAvailability } from "./api/availability";
+import { fetchFacilityAvailability, AvailabilityApiError } from "./api/availability";
 import {
   cancelReservation,
   createReservation,
@@ -79,7 +79,7 @@ function reservationCreationError(cause: unknown): string {
       case "VALIDATION_ERROR":
         return "Check the slot and date/time values, then try again.";
       case "FACILITY_NOT_FOUND":
-        return "This facility is no longer available.";
+        return "This parking facility is currently unavailable.";
       case "SLOT_NOT_FOUND":
         return "This parking slot is no longer available.";
       case "SLOT_UNAVAILABLE":
@@ -116,6 +116,13 @@ function reservationDetailErrorMessage(cause: unknown): string {
       return "This reservation could not be found or is no longer available.";
   }
   return cause instanceof Error ? cause.message : "Unable to load reservation details.";
+}
+
+function availabilityErrorMessage(cause: unknown): string {
+  if (cause instanceof AvailabilityApiError && cause.status === 404) {
+    return "This parking facility is currently unavailable.";
+  }
+  return cause instanceof Error ? cause.message : "Unable to load availability.";
 }
 
 function formatCurrency(amount: number | null): string {
@@ -371,7 +378,7 @@ export default function App() {
       setViewState("success");
     } catch (cause) {
       setAvailability(undefined);
-      setError(cause instanceof Error ? cause.message : "Unable to load availability.");
+      setError(availabilityErrorMessage(cause));
       setViewState("error");
     }
   }

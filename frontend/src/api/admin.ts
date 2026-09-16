@@ -1,9 +1,20 @@
-import { OPERATOR_STATUSES, type Operator, type OperatorStatus } from "@smartpark/shared";
+import {
+  OPERATOR_STATUSES,
+  type Operator,
+  type OperatorStatus,
+  type ParkingFacility,
+} from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
+import { isFacility } from "./operators";
 
 /** Wire shape of GET /api/v1/admin/operators (docs/API_SPEC.md §2 admin). */
 export interface AdminOperatorListResponse {
   operators: Operator[];
+}
+
+/** Wire shape of GET /api/v1/admin/facilities (docs/API_SPEC.md §2 admin). */
+export interface AdminFacilityListResponse {
+  facilities: ParkingFacility[];
 }
 
 function isOperator(value: unknown): value is Operator {
@@ -27,6 +38,15 @@ function isAdminOperatorListResponse(value: unknown): value is AdminOperatorList
     typeof value === "object" &&
     Array.isArray((value as { operators?: unknown }).operators) &&
     (value as { operators: unknown[] }).operators.every(isOperator)
+  );
+}
+
+function isAdminFacilityListResponse(value: unknown): value is AdminFacilityListResponse {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Array.isArray((value as { facilities?: unknown }).facilities) &&
+    (value as { facilities: unknown[] }).facilities.every(isFacility)
   );
 }
 
@@ -120,4 +140,72 @@ export function approveOperator(accessToken: string, operatorId: number): Promis
 /** POST /api/v1/admin/operators/:id/reject — UNDER_REVIEW → REJECTED. */
 export function rejectOperator(accessToken: string, operatorId: number): Promise<Operator> {
   return transitionOperator(accessToken, operatorId, "reject");
+}
+
+function assertFacilityId(facilityId: number): void {
+  if (typeof facilityId !== "number" || !Number.isInteger(facilityId) || facilityId <= 0) {
+    throw new AuthApiError("Invalid facility id.");
+  }
+}
+
+type FacilityTransition = "review" | "approve" | "reject" | "activate" | "deactivate";
+
+async function transitionFacility(
+  accessToken: string,
+  facilityId: number,
+  action: FacilityTransition,
+): Promise<ParkingFacility> {
+  assertFacilityId(facilityId);
+  const body = await request(
+    `/admin/facilities/${encodeURIComponent(facilityId)}/${action}`,
+    accessToken,
+    { method: "POST" },
+  );
+  if (!isFacility(body)) {
+    throw new AuthApiError(`The facility ${action} response was incomplete or malformed.`);
+  }
+  return body;
+}
+
+/** GET /api/v1/admin/facilities?status=… — filtered facility list, oldest first. */
+export async function listAdminFacilities(
+  accessToken: string,
+  status: OperatorStatus = "PENDING",
+): Promise<ParkingFacility[]> {
+  const body = await request(`/admin/facilities?${new URLSearchParams({ status })}`, accessToken);
+  if (!isAdminFacilityListResponse(body)) {
+    throw new AuthApiError("The admin facilities response was incomplete or malformed.");
+  }
+  return body.facilities;
+}
+
+/** POST /api/v1/admin/facilities/:id/review — PENDING → UNDER_REVIEW. */
+export function reviewFacility(accessToken: string, facilityId: number): Promise<ParkingFacility> {
+  return transitionFacility(accessToken, facilityId, "review");
+}
+
+/** POST /api/v1/admin/facilities/:id/approve — UNDER_REVIEW → VERIFIED. */
+export function approveFacility(accessToken: string, facilityId: number): Promise<ParkingFacility> {
+  return transitionFacility(accessToken, facilityId, "approve");
+}
+
+/** POST /api/v1/admin/facilities/:id/reject — UNDER_REVIEW → REJECTED. */
+export function rejectFacility(accessToken: string, facilityId: number): Promise<ParkingFacility> {
+  return transitionFacility(accessToken, facilityId, "reject");
+}
+
+/** POST /api/v1/admin/facilities/:id/activate — VERIFIED → active. */
+export function activateFacility(
+  accessToken: string,
+  facilityId: number,
+): Promise<ParkingFacility> {
+  return transitionFacility(accessToken, facilityId, "activate");
+}
+
+/** POST /api/v1/admin/facilities/:id/deactivate — VERIFIED → inactive. */
+export function deactivateFacility(
+  accessToken: string,
+  facilityId: number,
+): Promise<ParkingFacility> {
+  return transitionFacility(accessToken, facilityId, "deactivate");
 }

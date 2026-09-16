@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Operator, OperatorStatus } from "@smartpark/shared";
 import { approveOperator, listAdminOperators, rejectOperator, reviewOperator } from "./api/admin";
 import { AuthApiError } from "./api/auth";
+import AdminFacilities from "./AdminFacilities";
 
 type LoadState = "loading" | "success" | "error";
 type Action = "review" | "approve" | "reject";
+type AdminSection = "operators" | "facilities";
 
 const STATUS_TABS: { status: OperatorStatus; label: string }[] = [
   { status: "PENDING", label: "Pending" },
@@ -70,7 +72,65 @@ function availableActions(operator: Operator): { action: Action }[] {
 }
 
 export default function AdminDashboard({ accessToken, onError }: AdminDashboardProps) {
+  const [section, setSection] = useState<AdminSection>("operators");
   const [status, setStatus] = useState<OperatorStatus>("PENDING");
+
+  return (
+    <section className="admin-dashboard" aria-labelledby="admin-dashboard-title">
+      <div className="section-heading">
+        <div>
+          <p className="section-kicker">Verification</p>
+          <h2 id="admin-dashboard-title">Admin Dashboard</h2>
+        </div>
+        <span className="reservation-count">
+          {section === "operators" ? "Operator verification" : "Facility control"}
+        </span>
+      </div>
+
+      <div className="admin-section-switch" role="group" aria-label="Admin section">
+        <button
+          type="button"
+          className={section === "operators" ? "admin-section-tab selected" : "admin-section-tab"}
+          aria-pressed={section === "operators"}
+          onClick={() => setSection("operators")}
+        >
+          Operators
+        </button>
+        <button
+          type="button"
+          className={section === "facilities" ? "admin-section-tab selected" : "admin-section-tab"}
+          aria-pressed={section === "facilities"}
+          onClick={() => setSection("facilities")}
+        >
+          Facilities
+        </button>
+      </div>
+
+      {section === "operators" ? (
+        <OperatorVerification
+          accessToken={accessToken}
+          onError={onError}
+          status={status}
+          setStatus={setStatus}
+        />
+      ) : (
+        <AdminFacilities accessToken={accessToken} onError={onError} />
+      )}
+    </section>
+  );
+}
+
+function OperatorVerification({
+  accessToken,
+  onError,
+  status,
+  setStatus,
+}: {
+  accessToken: string;
+  onError?: (message: string) => void;
+  status: OperatorStatus;
+  setStatus: (status: OperatorStatus) => void;
+}) {
   const [operators, setOperators] = useState<Operator[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
@@ -143,15 +203,7 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
   }
 
   return (
-    <section className="admin-dashboard" aria-labelledby="admin-dashboard-title">
-      <div className="section-heading">
-        <div>
-          <p className="section-kicker">Verification</p>
-          <h2 id="admin-dashboard-title">Admin Dashboard</h2>
-        </div>
-        <span className="reservation-count">Operator verification</span>
-      </div>
-
+    <>
       <fieldset className="admin-status-tabs">
         <legend>Filter by status</legend>
         {STATUS_TABS.map((tab) => (
@@ -251,6 +303,6 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
           </ul>
         )}
       </div>
-    </section>
+    </>
   );
 }

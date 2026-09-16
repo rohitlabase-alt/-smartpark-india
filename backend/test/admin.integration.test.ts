@@ -1,6 +1,7 @@
 /**
- * Phase 8, Part 1 DB-backed integration tests: admin operator verification
- * workflow (docs/API_SPEC.md §2 admin) and the assertVerifiedOperator gate on
+ * Phase 8, Parts 1 & 3 DB-backed integration tests: admin operator
+ * verification workflow (docs/API_SPEC.md §2 admin), admin facility control
+ * workflow (Phase 8 Part 3), and the assertVerifiedOperator gate on
  * operational operator actions. THROWAWAY postgres (`smartpark_test`) is
  * recreated + migrated per run; runs serially with the other DB-backed suites
  * (fileParallelism: false in backend/vitest.config.ts).
@@ -581,5 +582,440 @@ describe("assertVerifiedOperator gate (facilities + slots + operator operations)
     );
     expect(patch.status).toBe(403);
     expect(errorCode(patch.body)).toBe("FORBIDDEN");
+  });
+});
+
+// ── Phase 8, Part 3: admin facility control ────────────────────────────────
+
+type FacilityResponse = ParkingFacility & Record<string, unknown>;
+
+async function createVerifiedFacility(
+  label: string,
+): Promise<{ admin: AuthResponse; facility: ParkingFacility; operatorSession: AuthResponse }> {
+  const admin = await registerAdminSession(`${label}-adm`);
+  const { session, operator } = await registerOperator(`${label}-op`);
+  await jsonPost(`/api/v1/admin/operators/${operator.id}/review`, {}, admin.accessToken);
+  await jsonPost(`/api/v1/admin/operators/${operator.id}/approve`, {}, admin.accessToken);
+  const facility = await createFacility(session.accessToken);
+  await jsonPost(`/api/v1/admin/facilities/${facility.id}/review`, {}, admin.accessToken);
+  await jsonPost(`/api/v1/admin/facilities/${facility.id}/approve`, {}, admin.accessToken);
+  const { body: updated } = await jsonGet(`/api/v1/operators/me/facilities`, session.accessToken);
+  const verifiedFacility = (updated as ParkingFacility[]).find((f) => f.id === facility.id)!;
+  return { admin, facility: verifiedFacility, operatorSession: session };
+}
+
+async function createPendingFacility(
+  label: string,
+): Promise<{ admin: AuthResponse; facility: ParkingFacility; operatorSession: AuthResponse }> {
+  const admin = await registerAdminSession(`${label}-adm`);
+  const { session, operator } = await registerOperator(`${label}-op`);
+  await jsonPost(`/api/v1/admin/operators/${operator.id}/review`, {}, admin.accessToken);
+  await jsonPost(`/api/v1/admin/operators/${operator.id}/approve`, {}, admin.accessToken);
+  const facility = await createFacility(session.accessToken);
+  return { admin, facility, operatorSession: session };
+}
+
+describe("GET /api/v1/admin/facilities", () => {
+  it("401 unauthenticated", async () => {
+    const res = await jsonGet("/api/v1/admin/facilities");
+    expect(res.status).toBe(401);
+  });
+
+  it("403 for an authenticated non-admin (USER)", async () => {
+    const user = await registerSession("fac-list-non-admin");
+    const res = await jsonGet("/api/v1/admin/facilities", user.accessToken);
+    expect(res.status).toBe(403);
+    expect(errorCode(res.body)).toBe("FORBIDDEN");
+  });
+
+  it("defaults to PENDING and supports valid status filters", async () => {
+    const { admin, facility: pendingFacility } = await createPendingFacility("fac-list");
+
+    const underReviewOp = await registerOperator("fac-list-under");
+    await jsonPost(
+      `/api/v1/admin/operators/${underReviewOp.operator.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    await jsonPost(
+      `/api/v1/admin/operators/${underReviewOp.operator.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    const underReviewFacility = await createFacility(underReviewOp.session.accessToken);
+    await jsonPost(
+      `/api/v1/admin/facilities/${underReviewFacility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+
+    const defaultRes = await jsonGet("/api/v1/admin/facilities", admin.accessToken);
+    expect(defaultRes.status).toBe(200);
+    const { facilities } = defaultRes.body as { facilities: ParkingFacility[] };
+    expect(facilities.map((f) => f.id)).toContain(pendingFacility.id);
+    expect(facilities.every((f) => f.verificationStatus === "PENDING")).toBe(true);
+
+    const underReviewRes = await jsonGet(
+      "/api/v1/admin/facilities?status=UNDER_REVIEW",
+      admin.accessToken,
+    );
+    expect(underReviewRes.status).toBe(200);
+    const underReviewList = (underReviewRes.body as { facilities: ParkingFacility[] }).facilities;
+    expect(underReviewList.map((f) => f.id)).toContain(underReviewFacility.id);
+    expect(underReviewList.every((f) => f.verificationStatus === "UNDER_REVIEW")).toBe(true);
+
+    const verifiedRes = await jsonGet(
+      "/api/v1/admin/facilities?status=VERIFIED",
+      admin.accessToken,
+    );
+    expect(verifiedRes.status).toBe(200);
+    expect(
+      (verifiedRes.body as { facilities: ParkingFacility[] }).facilities.every(
+        (f) => f.verificationStatus === "VERIFIED",
+      ),
+    ).toBe(true);
+  });
+
+  it("400 for an invalid status filter", async () => {
+    const admin = await registerAdminSession("fac-list-bad");
+    const res = await jsonGet("/api/v1/admin/facilities?status=HACKED", admin.accessToken);
+    expect(res.status).toBe(400);
+    expect(errorCode(res.body)).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns safe facility DTO fields only", async () => {
+    const { admin, facility } = await createPendingFacility("fac-list-dto");
+
+    const res = await jsonGet(`/api/v1/admin/facilities?status=PENDING`, admin.accessToken);
+    const { facilities } = res.body as { facilities: FacilityResponse[] };
+    const listed = facilities.find((f) => f.id === facility.id)!;
+    expect(listed).toBeDefined();
+    expect(Object.keys(listed).sort()).toEqual([
+      "address",
+      "approvedAt",
+      "approvedBy",
+      "area",
+      "availabilityMode",
+      "capacity",
+      "city",
+      "country",
+      "createdAt",
+      "description",
+      "id",
+      "isActive",
+      "isDemo",
+      "latitude",
+      "longitude",
+      "name",
+      "operatorId",
+      "parkingId",
+      "state",
+      "type",
+      "updatedAt",
+      "verificationStatus",
+    ]);
+    expect(JSON.stringify(listed)).not.toMatch(/email|password|token|hash/i);
+  });
+
+  it("404 for nonexistent and non-numeric facility ids", async () => {
+    const admin = await registerAdminSession("fac-404-list");
+    expect(
+      (await jsonPost("/api/v1/admin/facilities/999999/review", {}, admin.accessToken)).status,
+    ).toBe(404);
+    expect(
+      (await jsonPost("/api/v1/admin/facilities/abc/review", {}, admin.accessToken)).status,
+    ).toBe(404);
+  });
+});
+
+describe("POST /api/v1/admin/facilities/:id/review", () => {
+  it("401 unauthenticated and 403 non-admin", async () => {
+    const { facility } = await createPendingFacility("fac-review-gate");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/review`, {}, undefined)).status,
+    ).toBe(401);
+    const user = await registerSession("fac-review-non-admin");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/review`, {}, user.accessToken))
+        .status,
+    ).toBe(403);
+  });
+
+  it("PENDING -> UNDER_REVIEW works", async () => {
+    const { admin, facility } = await createPendingFacility("fac-review-ok");
+    expect(facility.verificationStatus).toBe("PENDING");
+
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as ParkingFacility).verificationStatus).toBe("UNDER_REVIEW");
+  });
+
+  it("409 for a repeat review and for reviewing an already-final facility", async () => {
+    const admin = await registerAdminSession("fac-review-conflict");
+    const underOp = await registerOperator("fac-review-repeat");
+    await jsonPost(`/api/v1/admin/operators/${underOp.operator.id}/review`, {}, admin.accessToken);
+    await jsonPost(`/api/v1/admin/operators/${underOp.operator.id}/approve`, {}, admin.accessToken);
+    const underReviewFacility = await createFacility(underOp.session.accessToken);
+
+    const verifiedOp = await registerOperator("fac-review-verified");
+    await jsonPost(
+      `/api/v1/admin/operators/${verifiedOp.operator.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    await jsonPost(
+      `/api/v1/admin/operators/${verifiedOp.operator.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    const verifiedFacility = await createFacility(verifiedOp.session.accessToken);
+
+    await jsonPost(
+      `/api/v1/admin/facilities/${underReviewFacility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    const repeat = await jsonPost(
+      `/api/v1/admin/facilities/${underReviewFacility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(repeat.status).toBe(409);
+    expect(errorCode(repeat.body)).toBe("FACILITY_STATUS_CONFLICT");
+
+    await jsonPost(`/api/v1/admin/facilities/${verifiedFacility.id}/review`, {}, admin.accessToken);
+    await jsonPost(
+      `/api/v1/admin/facilities/${verifiedFacility.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    const onVerified = await jsonPost(
+      `/api/v1/admin/facilities/${verifiedFacility.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(onVerified.status).toBe(409);
+    expect(errorCode(onVerified.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+});
+
+describe("POST /api/v1/admin/facilities/:id/approve", () => {
+  it("401 unauthenticated and 403 non-admin", async () => {
+    const { facility } = await createPendingFacility("fac-approve-gate");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/approve`, {}, undefined)).status,
+    ).toBe(401);
+    const user = await registerSession("fac-approve-non-admin");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/approve`, {}, user.accessToken))
+        .status,
+    ).toBe(403);
+  });
+
+  it("UNDER_REVIEW -> VERIFIED records approved_by and approved_at", async () => {
+    const admin = await registerAdminSession("fac-approve-ok");
+    const { session, operator } = await registerOperator("fac-approve-op");
+    await jsonPost(`/api/v1/admin/operators/${operator.id}/review`, {}, admin.accessToken);
+    await jsonPost(`/api/v1/admin/operators/${operator.id}/approve`, {}, admin.accessToken);
+    const facility = await createFacility(session.accessToken);
+    await jsonPost(`/api/v1/admin/facilities/${facility.id}/review`, {}, admin.accessToken);
+
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as ParkingFacility).verificationStatus).toBe("VERIFIED");
+
+    const { rows } = await getPool().query<{
+      approved_by: string | null;
+      approved_at: Date | null;
+    }>(`SELECT approved_by, approved_at FROM parking_facilities WHERE id = $1`, [facility.id]);
+    expect(Number(rows[0]!.approved_by)).toBe(admin.user.id);
+    expect(rows[0]!.approved_at).not.toBeNull();
+  });
+
+  it("409 PENDING -> VERIFIED (skip review) is not allowed", async () => {
+    const { admin, facility } = await createPendingFacility("fac-approve-skip");
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+});
+
+describe("POST /api/v1/admin/facilities/:id/reject", () => {
+  it("401 unauthenticated and 403 non-admin", async () => {
+    const { facility } = await createPendingFacility("fac-reject-gate");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/reject`, {}, undefined)).status,
+    ).toBe(401);
+    const user = await registerSession("fac-reject-non-admin");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/reject`, {}, user.accessToken))
+        .status,
+    ).toBe(403);
+  });
+
+  it("UNDER_REVIEW -> REJECTED works", async () => {
+    const admin = await registerAdminSession("fac-reject-ok");
+    const { session, operator } = await registerOperator("fac-reject-op");
+    await jsonPost(`/api/v1/admin/operators/${operator.id}/review`, {}, admin.accessToken);
+    await jsonPost(`/api/v1/admin/operators/${operator.id}/approve`, {}, admin.accessToken);
+    const facility = await createFacility(session.accessToken);
+    await jsonPost(`/api/v1/admin/facilities/${facility.id}/review`, {}, admin.accessToken);
+
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/reject`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as ParkingFacility).verificationStatus).toBe("REJECTED");
+  });
+
+  it("reject illegal transitions return 409 (PENDING and VERIFIED)", async () => {
+    const admin = await registerAdminSession("fac-reject-conflict");
+    const pendOp = await registerOperator("fac-reject-pend");
+    await jsonPost(`/api/v1/admin/operators/${pendOp.operator.id}/review`, {}, admin.accessToken);
+    await jsonPost(`/api/v1/admin/operators/${pendOp.operator.id}/approve`, {}, admin.accessToken);
+    const pendingFacility = await createFacility(pendOp.session.accessToken);
+
+    const verifyOp = await registerOperator("fac-reject-verify");
+    await jsonPost(`/api/v1/admin/operators/${verifyOp.operator.id}/review`, {}, admin.accessToken);
+    await jsonPost(
+      `/api/v1/admin/operators/${verifyOp.operator.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    const verifiedFacility = await createFacility(verifyOp.session.accessToken);
+
+    const onPending = await jsonPost(
+      `/api/v1/admin/facilities/${pendingFacility.id}/reject`,
+      {},
+      admin.accessToken,
+    );
+    expect(onPending.status).toBe(409);
+    expect(errorCode(onPending.body)).toBe("FACILITY_STATUS_CONFLICT");
+
+    await jsonPost(`/api/v1/admin/facilities/${verifiedFacility.id}/review`, {}, admin.accessToken);
+    await jsonPost(
+      `/api/v1/admin/facilities/${verifiedFacility.id}/approve`,
+      {},
+      admin.accessToken,
+    );
+    const onVerified = await jsonPost(
+      `/api/v1/admin/facilities/${verifiedFacility.id}/reject`,
+      {},
+      admin.accessToken,
+    );
+    expect(onVerified.status).toBe(409);
+    expect(errorCode(onVerified.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+});
+
+describe("POST /api/v1/admin/facilities/:id/activate", () => {
+  it("401 unauthenticated and 403 non-admin", async () => {
+    const { facility } = await createVerifiedFacility("fac-activate-gate");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/activate`, {}, undefined)).status,
+    ).toBe(401);
+    const user = await registerSession("fac-activate-non-admin");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/activate`, {}, user.accessToken))
+        .status,
+    ).toBe(403);
+  });
+
+  it("VERIFIED facility can be activated", async () => {
+    const { admin, facility } = await createVerifiedFacility("fac-activate-ok");
+    expect(facility.isActive).toBe(true);
+
+    await jsonPost(`/api/v1/admin/facilities/${facility.id}/deactivate`, {}, admin.accessToken);
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/activate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as ParkingFacility).isActive).toBe(true);
+  });
+
+  it("409 activating non-VERIFIED facilities (PENDING)", async () => {
+    const { admin, facility } = await createPendingFacility("fac-activate-pending");
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/activate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+
+  it("409 repeated activate on already-active facility", async () => {
+    const { admin, facility } = await createVerifiedFacility("fac-activate-repeat");
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/activate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+});
+
+describe("POST /api/v1/admin/facilities/:id/deactivate", () => {
+  it("401 unauthenticated and 403 non-admin", async () => {
+    const { facility } = await createVerifiedFacility("fac-deactivate-gate");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/deactivate`, {}, undefined)).status,
+    ).toBe(401);
+    const user = await registerSession("fac-deactivate-non-admin");
+    expect(
+      (await jsonPost(`/api/v1/admin/facilities/${facility.id}/deactivate`, {}, user.accessToken))
+        .status,
+    ).toBe(403);
+  });
+
+  it("VERIFIED facility can be deactivated", async () => {
+    const { admin, facility } = await createVerifiedFacility("fac-deactivate-ok");
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/deactivate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(200);
+    expect((res.body as ParkingFacility).isActive).toBe(false);
+  });
+
+  it("409 deactivating non-VERIFIED facilities (PENDING)", async () => {
+    const { admin, facility } = await createPendingFacility("fac-deactivate-pending");
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/deactivate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("FACILITY_STATUS_CONFLICT");
+  });
+
+  it("409 repeated deactivate on already-inactive facility", async () => {
+    const { admin, facility } = await createVerifiedFacility("fac-deactivate-repeat");
+    await jsonPost(`/api/v1/admin/facilities/${facility.id}/deactivate`, {}, admin.accessToken);
+    const res = await jsonPost(
+      `/api/v1/admin/facilities/${facility.id}/deactivate`,
+      {},
+      admin.accessToken,
+    );
+    expect(res.status).toBe(409);
+    expect(errorCode(res.body)).toBe("FACILITY_STATUS_CONFLICT");
   });
 });
