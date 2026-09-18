@@ -6,6 +6,7 @@ import {
   type CreateFacilityRequest,
   type CreateSlotRequest,
   type Operator,
+  type OperatorOccupancyReport,
   type OperatorRegisterRequest,
   type ParkingFacility,
   type ParkingSessionListResponse,
@@ -125,6 +126,26 @@ function isParkingSessionListResponse(value: unknown): value is ParkingSessionLi
     typeof value === "object" &&
     Array.isArray((value as { sessions?: unknown }).sessions) &&
     (value as { sessions: unknown[] }).sessions.every(isParkingSession)
+  );
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isOperatorOccupancyReport(value: unknown): value is OperatorOccupancyReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Partial<OperatorOccupancyReport>;
+  return (
+    (report.start === null || typeof report.start === "string") &&
+    (report.end === null || typeof report.end === "string") &&
+    isCount(report.totalFacilities) &&
+    isCount(report.totalSlots) &&
+    isCount(report.availableSlots) &&
+    isCount(report.occupiedSlots) &&
+    isCount(report.activeSessions) &&
+    isCount(report.completedSessions) &&
+    isCount(report.cancelledSessions)
   );
 }
 
@@ -297,6 +318,30 @@ export async function getOperatorSessions(
   const body = await request("/operators/me/sessions", accessToken);
   if (!isParkingSessionListResponse(body)) {
     throw new AuthApiError("The operator sessions response was incomplete or malformed.");
+  }
+  return body;
+}
+
+/** Optional reporting-period bounds for the occupancy report. */
+export interface OccupancyReportFilters {
+  from?: string;
+  to?: string;
+}
+
+export async function getOperatorOccupancyReport(
+  accessToken: string,
+  filters: OccupancyReportFilters = {},
+): Promise<OperatorOccupancyReport> {
+  const query = new URLSearchParams();
+  if (filters.from) query.set("from", filters.from);
+  if (filters.to) query.set("to", filters.to);
+  const queryString = query.toString();
+  const body = await request(
+    `/operators/me/reports/occupancy${queryString ? `?${queryString}` : ""}`,
+    accessToken,
+  );
+  if (!isOperatorOccupancyReport(body)) {
+    throw new AuthApiError("The occupancy report response was incomplete or malformed.");
   }
   return body;
 }

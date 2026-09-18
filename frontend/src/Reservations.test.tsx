@@ -1,36 +1,39 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PublicUser } from "@smartpark/shared";
-import App from "./App";
-import { clearMemorySession, setMemorySession, type AuthSession } from "./api/auth";
+import type { PublicParkingFacility, Reservation } from "@smartpark/shared";
+import { BookingsScreen } from "./screens/BookingsScreen";
+import { BookingFlowScreen } from "./screens/BookingFlowScreen";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const user: PublicUser = {
-  id: 7,
-  email: "driver@example.com",
-  fullName: "Asha Driver",
-  phone: null,
-  locale: "en",
-  status: "ACTIVE",
-  roles: ["USER"],
-  createdAt: "2026-09-01T10:00:00.000Z",
+const facility: PublicParkingFacility = {
+  id: 4,
+  parkingId: "PUN-000004",
+  name: "Shivaji Nagar Public Parking",
+  description: null,
+  type: "public",
+  city: "Pune",
+  state: "Maharashtra",
+  area: "Shivaji Nagar",
+  address: "FC Road",
+  capacity: 40,
+  hourlyRate: 100,
+  availabilityMode: "MANUAL",
+  totalSlots: 4,
+  availableSlots: 2,
+  availableVehicleTypes: ["car"],
+  isLive: true,
+  confidence: "HIGH",
+  lastUpdatedAt: "2026-09-01T10:00:00.000Z",
 };
-
-const session = {
-  accessToken: "access-token",
-  refreshToken: "refresh-token",
-  expiresInSeconds: 1800,
-  user,
-} satisfies AuthSession;
 
 const reservation = {
   id: 12,
   reservationCode: "BKG-ABC123",
-  userId: user.id,
+  userId: 7,
   facilityId: 4,
   zoneId: null,
   slotId: 9,
@@ -50,6 +53,7 @@ const cancelledReservation = {
   ...reservation,
   state: "CANCELLED" as const,
   cancelledAt: "2026-09-01T10:10:00.000Z",
+  cancelReason: "changed plans",
   updatedAt: "2026-09-01T10:10:00.000Z",
 };
 
@@ -58,10 +62,17 @@ const completedReservation = {
   state: "COMPLETED" as const,
 };
 
+const activeReservation = {
+  ...reservation,
+  id: 14,
+  reservationCode: "BKG-ACTIVE456",
+  state: "ACTIVE" as const,
+};
+
 const pendingReservation = {
   id: 13,
   reservationCode: "BKG-PENDING987",
-  userId: user.id,
+  userId: 7,
   facilityId: 4,
   zoneId: null,
   slotId: 10,
@@ -77,6 +88,14 @@ const pendingReservation = {
   updatedAt: "2026-09-02T10:05:00.000Z",
 };
 
+const confirmedReservation = {
+  ...pendingReservation,
+  state: "CONFIRMED" as const,
+  paymentStatus: "SUCCESS" as const,
+  confirmedAt: "2026-09-02T10:06:00.000Z",
+  updatedAt: "2026-09-02T10:06:00.000Z",
+};
+
 const initiatedPayment = {
   id: 1,
   reservationId: 13,
@@ -88,15 +107,24 @@ const initiatedPayment = {
   updatedAt: "2026-09-02T10:05:30.000Z",
 };
 
-const authoritativeReservation = {
-  ...reservation,
-  facilityId: 99,
-  slotId: null,
-  state: "CANCELLED" as const,
-  confirmedAt: "2026-09-01T10:05:00.000Z",
-  cancelledAt: "2026-09-01T10:10:00.000Z",
-  cancelReason: "changed plans",
-  updatedAt: "2026-09-01T10:10:00.000Z",
+const succeededPayment = {
+  ...initiatedPayment,
+  id: 2,
+  providerTxnId: "MOCK-BKG-UNIQUE-200",
+  status: "SUCCESS" as const,
+};
+
+const session = {
+  id: 55,
+  reservationId: 14,
+  facilityId: 4,
+  slotId: 9,
+  userId: 7,
+  entryAt: "2026-09-10T08:10:00.000Z",
+  exitAt: null,
+  status: "ACTIVE" as const,
+  createdAt: "2026-09-10T08:10:00.000Z",
+  updatedAt: "2026-09-10T08:10:00.000Z",
 };
 
 const availability = {
@@ -156,94 +184,64 @@ const availability = {
   ],
 };
 
+type Handler = (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>;
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+function routeFetch(handlers: Array<[string, Handler]> = []) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    for (const [fragment, handler] of handlers) {
+      if (url.includes(fragment)) return handler(input, init);
+    }
+    return json({ error: { message: "Not found" } }, 404);
+  });
+}
+
+function urls(mock: ReturnType<typeof routeFetch>): string[] {
+  return mock.mock.calls.map(([input]) => String(input));
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderAuthenticatedApp() {
-  setMemorySession(session);
-  await act(async () => {
-    root.render(<App />);
-  });
-}
-
-async function openReservations() {
-  await act(async () => {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav button")).find(
-      (candidate) => candidate.textContent?.includes("My Reservations"),
-    );
-    if (!button) throw new Error("My Reservations button not found");
-    button.click();
-  });
-}
-
-async function clickButton(label: string) {
-  await act(async () => {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent?.includes(label),
-    );
-    if (!button) throw new Error(`Button not found: ${label}`);
-    button.click();
-  });
-}
-
-async function renderReservationList(items: unknown[]) {
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ reservations: items }), { status: 200 }));
-  await renderAuthenticatedApp();
-  await openReservations();
-  await settleAsyncWork();
-  return fetchMock;
-}
-
-function setInput(id: string, value: string) {
-  act(() => {
-    const input = container.querySelector<HTMLInputElement>(`#${id}`)!;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    setter.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-
-function setSelect(id: string, value: string) {
-  act(() => {
-    const select = container.querySelector<HTMLSelectElement>(`#${id}`)!;
-    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-    setter.call(select, value);
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-}
-
-async function loadAvailability() {
-  setInput("facility-id", "4");
-  await act(async () => {
-    container.querySelector<HTMLFormElement>(".search-form")!.requestSubmit();
-  });
-  await settleAsyncWork();
-}
-
-async function submitReservation() {
-  await act(async () => {
-    container.querySelector<HTMLFormElement>(".reservation-form")!.requestSubmit();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-}
-
-function fillReservationForm() {
-  setSelect("reservation-slot", "9");
-  setInput("reservation-start", "2026-09-10T08:00");
-  setInput("reservation-end", "2026-09-10T10:00");
-}
-
-async function settleAsyncWork() {
+async function settle() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
+}
+
+async function renderBookings(
+  options: {
+    accessToken?: string;
+    onViewPass?: (r: Reservation) => void;
+    onSignIn?: () => void;
+  } = {},
+) {
+  await act(async () =>
+    root.render(
+      <BookingsScreen
+        accessToken={options.accessToken ?? "access-token"}
+        facilities={[facility]}
+        onViewPass={options.onViewPass ?? vi.fn()}
+        onSignIn={options.onSignIn ?? vi.fn()}
+      />,
+    ),
+  );
+  await settle();
+}
+
+function buttonWithText(text: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((entry) =>
+    entry.textContent?.includes(text),
+  );
+  if (!button) throw new Error(`No button with text "${text}"`);
+  return button;
 }
 
 beforeEach(() => {
-  clearMemorySession();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -252,846 +250,376 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
-  clearMemorySession();
   vi.restoreAllMocks();
 });
 
-describe("My Reservations screen", () => {
-  it("keeps availability public and does not fetch reservations until selected", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response(JSON.stringify(user), { status: 200 }));
-    await renderAuthenticatedApp();
-
-    expect(container.textContent).toContain("Check a parking facility");
-    expect(container.textContent).toContain("My Reservations");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]![0]).toContain("/auth/me");
+describe("BookingsScreen", () => {
+  it("shows a sign-in empty state when there is no session and calls onSignIn", async () => {
+    const onSignIn = vi.fn();
+    routeFetch();
+    await renderBookings({ accessToken: "", onSignIn });
+    expect(container.textContent).toContain("Sign in to see your bookings and parking passes.");
+    await act(async () => buttonWithText("Sign in").click());
+    expect(onSignIn).toHaveBeenCalledTimes(1);
   });
 
-  it("shows only eligible slots in the reservation form after availability loads", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }));
-    await renderAuthenticatedApp();
-    await loadAvailability();
-
-    const options = Array.from(
-      container.querySelectorAll<HTMLOptionElement>("#reservation-slot option"),
-    );
-    expect(options.map((option) => option.value)).toEqual(["", "9", "12"]);
-    expect(container.textContent).toContain("Create a reservation");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not expose reservation creation to unauthenticated users", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    await act(async () => root.render(<App />));
-
-    expect(container.querySelector(".reservation-creation")).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("shows cancellation only for confirmed reservations", async () => {
-    await renderReservationList([reservation, cancelledReservation, completedReservation]);
-
-    expect(container.querySelectorAll(".cancel-reservation-button")).toHaveLength(1);
-    expect(container.textContent).toContain("CANCELLED");
-    expect(container.textContent).toContain("COMPLETED");
-  });
-
-  it("opens an accessible confirmation without immediately sending a request", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-
-    expect(container.textContent).toContain("Cancel this reservation?");
+  it("loads and renders bookings with facility names, amounts, and status labels", async () => {
+    routeFetch([["/reservations", () => json({ reservations: [reservation] })]]);
+    await renderBookings();
+    expect(container.textContent).toContain("Shivaji Nagar Public Parking");
     expect(container.textContent).toContain("BKG-ABC123");
-    expect(container.textContent).toContain("Facility 4");
-    expect(container.textContent).toContain("Slot 9");
-    expect(container.textContent).toContain("Payment and refunds are not implemented.");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("closes cancellation confirmation without sending a request", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-    await clickButton("Keep Reservation");
-
-    expect(container.textContent).not.toContain("Cancel this reservation?");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("confirms cancellation once and updates the reservation authoritatively", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: cancelledReservation }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-    await clickButton("Confirm Cancellation");
-
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2]![0]).toContain("/reservations/BKG-ABC123/cancel");
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    expect(container.textContent).toContain("CANCELLED");
-    expect(container.textContent).not.toContain("Cancel Reservation");
-    expect(container.textContent).toContain("Reservation BKG-ABC123 has been cancelled.");
-  });
-
-  it("shows cancellation loading state and prevents duplicate requests", async () => {
-    let resolveCancellation!: (value: Response) => void;
-    const cancellationRequest = new Promise<Response>((resolve) => {
-      resolveCancellation = resolve;
-    });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockReturnValueOnce(cancellationRequest);
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-    await clickButton("Confirm Cancellation");
-
-    expect(container.textContent).toContain("Cancelling reservation...");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const confirmButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent?.includes("Cancelling..."),
-    );
-    expect(confirmButton?.disabled).toBe(true);
-
-    confirmButton?.click();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    resolveCancellation(
-      new Response(JSON.stringify({ reservation: cancelledReservation }), { status: 200 }),
-    );
-    await settleAsyncWork();
-  });
-
-  it.each([
-    [401, "UNAUTHORIZED", "You are not authorized to cancel this reservation."],
-    [404, "BOOKING_NOT_FOUND", "This reservation could not be found."],
-    [
-      422,
-      "CANNOT_CANCEL_COMPLETED",
-      "This reservation has already been completed and cannot be cancelled.",
-    ],
-  ] as const)("shows %s cancellation errors", async (status, code, message) => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: { code, message: "Backend error" } }), { status }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-    await clickButton("Confirm Cancellation");
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(message);
-    expect(container.textContent).toContain("BKG-ABC123");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it("refreshes the list when the backend reports an already-cancelled reservation", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { code: "ALREADY_CANCELLED", message: "Already cancelled" } }),
-          { status: 409 },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [cancelledReservation] }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("Cancel Reservation");
-    await clickButton("Confirm Cancellation");
-
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[3]![0]).toContain("/reservations");
-    expect(container.textContent).toContain("CANCELLED");
-    expect(container.textContent).not.toContain("Cancel Reservation");
-    expect(container.textContent).toContain("This reservation is already cancelled.");
-  });
-
-  it("shows a network error and keeps the reservation available", async () => {
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
-    await clickButton("Cancel Reservation");
-    await clickButton("Confirm Cancellation");
-
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Unable to reach the reservations service.",
-    );
-    expect(container.textContent).toContain("CONFIRMED");
-  });
-
-  it("validates the reservation time range before creating", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }));
-    await renderAuthenticatedApp();
-    await loadAvailability();
-    setSelect("reservation-slot", "9");
-    setInput("reservation-start", "2026-09-10T10:00");
-    setInput("reservation-end", "2026-09-10T08:00");
-    await submitReservation();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "End time must be after start time.",
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("submits the numeric facility ID and ISO times, then shows confirmation", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ reservation }), { status: 201 }));
-    await renderAuthenticatedApp();
-    await loadAvailability();
-    fillReservationForm();
-    await submitReservation();
-
-    expect(fetchMock.mock.calls[2]![0]).toContain("/reservations");
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({
-        facilityId: 4,
-        slotId: 9,
-        startsAt: "2026-09-10T08:00:00.000Z",
-        endsAt: "2026-09-10T10:00:00.000Z",
-      }),
-    });
-    expect(container.textContent).toContain("BKG-ABC123");
-    expect(container.textContent).toContain("Reservation confirmed");
-    expect(container.textContent).toContain("CONFIRMED");
-    expect(container.textContent).toContain("View My Reservations");
-  });
-
-  it("prevents duplicate reservation submissions while creating", async () => {
-    let resolveCreate!: (value: Response) => void;
-    const createRequest = new Promise<Response>((resolve) => {
-      resolveCreate = resolve;
-    });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }))
-      .mockReturnValueOnce(createRequest);
-    await renderAuthenticatedApp();
-    await loadAvailability();
-    fillReservationForm();
-    act(() => container.querySelector<HTMLFormElement>(".reservation-form")!.requestSubmit());
-    expect(container.textContent).toContain("Creating reservation...");
-    act(() => container.querySelector<HTMLFormElement>(".reservation-form")!.requestSubmit());
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-
-    resolveCreate(new Response(JSON.stringify({ reservation }), { status: 201 }));
-    await settleAsyncWork();
-  });
-
-  it.each([
-    ["SLOT_UNAVAILABLE", "This slot cannot be reserved right now."],
-    [
-      "RESERVATION_CONFLICT",
-      "This slot is no longer available for that time. Choose another time or slot.",
-    ],
-  ])("shows %s creation errors", async (code, message) => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: { code, message: "Backend error" } }), {
-          status: code === "RESERVATION_CONFLICT" ? 409 : 400,
-        }),
-      );
-    await renderAuthenticatedApp();
-    await loadAvailability();
-    fillReservationForm();
-    await submitReservation();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(message);
-  });
-
-  it("shows a network error without breaking availability", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(availability), { status: 200 }))
-      .mockRejectedValueOnce(new Error("Network unavailable"));
-    await renderAuthenticatedApp();
-    await loadAvailability();
-    fillReservationForm();
-    await submitReservation();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Unable to reach the reservations service.",
-    );
-    expect(container.textContent).toContain("Parking availability");
-  });
-
-  it("shows loading while reservations are being fetched", async () => {
-    let resolveReservations!: (value: Response) => void;
-    const reservationsRequest = new Promise<Response>((resolve) => {
-      resolveReservations = resolve;
-    });
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockReturnValueOnce(reservationsRequest);
-    await renderAuthenticatedApp();
-
-    await openReservations();
-    expect(container.textContent).toContain("Loading your reservations...");
-
-    resolveReservations(new Response(JSON.stringify({ reservations: [] }), { status: 200 }));
-    await settleAsyncWork();
-  });
-
-  it("renders an empty reservation history", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ reservations: [] }), { status: 200 }));
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    expect(container.textContent).toContain("You have no reservations yet.");
-  });
-
-  it("renders reservation details and status", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    expect(container.textContent).toContain("BKG-ABC123");
-    expect(container.textContent).toContain("Facility ID4");
-    expect(container.textContent).toContain("Slot ID9");
-    expect(container.textContent).toContain("Start time");
-    expect(container.textContent).toContain("End time");
-    expect(container.textContent).toContain("CONFIRMED");
-    expect(container.textContent).toContain("Created");
-    expect(container.querySelector('time[datetime="2026-09-10T08:00:00.000Z"]')).not.toBeNull();
-    expect(container.querySelector('time[datetime="2026-09-10T10:00:00.000Z"]')).not.toBeNull();
-    expect(container.querySelector('time[datetime="2026-09-01T10:05:00.000Z"]')).not.toBeNull();
-  });
-
-  it("shows a lazy View Details action and keeps the list visible while loading", async () => {
-    let resolveDetail!: (value: Response) => void;
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveDetail = resolve;
-      }),
-    );
-
-    expect(container.textContent).toContain("View Details");
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/BKG-ABC123"))).toBe(false);
-    await clickButton("View Details");
-    expect(container.textContent).toContain("Loading reservation details...");
-    expect(container.textContent).toContain("BKG-ABC123");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2]![0]).toContain("/reservations/BKG-ABC123");
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
-      headers: { Authorization: "Bearer access-token" },
-    });
-    resolveDetail(
-      new Response(JSON.stringify({ reservation: authoritativeReservation }), { status: 200 }),
-    );
-    await settleAsyncWork();
-  });
-
-  it("ignores a stale detail response after a newer reservation is selected", async () => {
-    let resolveA!: (value: Response) => void;
-    let resolveB!: (value: Response) => void;
-    const reservationB = {
-      ...reservation,
-      id: 13,
-      reservationCode: "BKG-XYZ789",
-      facilityId: 8,
-    };
-    const fetchMock = await renderReservationList([reservation, reservationB]);
-    fetchMock
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveA = resolve;
-        }),
-      )
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveB = resolve;
-        }),
-      );
-
-    const detailButtons = () =>
-      container.querySelectorAll<HTMLButtonElement>(".view-details-button");
-    await act(async () => detailButtons()[0]!.click());
-    await act(async () => detailButtons()[1]!.click());
-
-    resolveB(new Response(JSON.stringify({ reservation: reservationB }), { status: 200 }));
-    await settleAsyncWork();
-    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
-
-    resolveA(new Response(JSON.stringify({ reservation }), { status: 200 }));
-    await settleAsyncWork();
-    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
-    expect(container.querySelector(".reservation-detail")?.textContent).not.toContain(
-      "Facility ID4",
-    );
-  });
-
-  it("ignores a stale detail error after a newer reservation is selected", async () => {
-    let rejectA!: (reason: Error) => void;
-    let resolveB!: (value: Response) => void;
-    const reservationB = {
-      ...reservation,
-      id: 13,
-      reservationCode: "BKG-XYZ789",
-      facilityId: 8,
-    };
-    const fetchMock = await renderReservationList([reservation, reservationB]);
-    fetchMock
-      .mockReturnValueOnce(
-        new Promise((_, reject) => {
-          rejectA = reject;
-        }),
-      )
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveB = resolve;
-        }),
-      );
-
-    const detailButtons = () =>
-      container.querySelectorAll<HTMLButtonElement>(".view-details-button");
-    await act(async () => detailButtons()[0]!.click());
-    await act(async () => detailButtons()[1]!.click());
-    resolveB(new Response(JSON.stringify({ reservation: reservationB }), { status: 200 }));
-    await settleAsyncWork();
-    rejectA(new Error("stale failure"));
-    await settleAsyncWork();
-
-    expect(container.querySelector(".reservation-detail")?.textContent).toContain("Facility ID8");
-    expect(container.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("renders authoritative detail data and optional timestamps", async () => {
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ reservation: authoritativeReservation }), { status: 200 }),
-    );
-    await clickButton("View Details");
-    await settleAsyncWork();
-
-    expect(container.textContent).toContain("Reservation details");
-    expect(container.textContent).toContain("Facility ID99");
-    expect(container.querySelector(".reservation-detail")?.textContent).not.toContain("Slot ID");
-    expect(container.textContent).toContain("CANCELLED");
-    expect(container.textContent).toContain("changed plans");
     expect(container.textContent).toContain("Confirmed");
-    expect(container.textContent).toContain("Cancelled");
-    expect(container.querySelector('time[datetime="2026-09-01T10:10:00.000Z"]')).not.toBeNull();
+    expect(container.textContent).toContain("₹200");
   });
 
-  it.each([
-    [401, "UNAUTHORIZED", "You are not authorized to view this reservation."],
-    [404, "BOOKING_NOT_FOUND", "This reservation could not be found or is no longer available."],
-    [503, "SERVICE_UNAVAILABLE", "Try again later"],
-  ])("shows safe reservation detail error for %i", async (status, code, message) => {
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: { code, message: "Try again later" } }), { status }),
-    );
-    await clickButton("View Details");
-    await settleAsyncWork();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(message);
-    expect(container.textContent).toContain("BKG-ABC123");
-    expect(container.textContent).toContain("My Reservations");
-  });
-
-  it("shows network and malformed detail errors without triggering cancellation", async () => {
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
-    await clickButton("View Details");
-    await settleAsyncWork();
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Unable to reach the reservations service.",
-    );
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/cancel"))).toBe(false);
-
-    act(() => root.unmount());
-    container.replaceChildren();
-    root = createRoot(container);
-    vi.restoreAllMocks();
-    const malformedFetch = vi.spyOn(globalThis, "fetch");
-    malformedFetch
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: { reservationCode: "bad" } }), { status: 200 }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    await clickButton("View Details");
-    await settleAsyncWork();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "incomplete or malformed",
-    );
-    expect(container.textContent).toContain("BKG-ABC123");
-  });
-
-  it("omits the slot field when a reservation has no slot", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [{ ...reservation, slotId: null }] }), {
-          status: 200,
-        }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    expect(container.textContent).not.toContain("Slot ID");
-  });
-
-  it("shows an unauthorized error without exposing reservation data", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: { code: "UNAUTHORIZED", message: "Unauthorized" } }), {
-          status: 401,
-        }),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "You are not authorized to view reservations.",
-    );
-    expect(container.textContent).not.toContain("BKG-ABC123");
-  });
-
-  it("shows API and network errors", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockRejectedValueOnce(new Error("Network unavailable"));
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Unable to reach the reservations service.",
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("shows an API error response", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { code: "SERVICE_UNAVAILABLE", message: "Try again later" } }),
-          { status: 503 },
-        ),
-      );
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Try again later");
-  });
-
-  it("keeps logout functional and removes the reservations view", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservations: [reservation] }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
-    await renderAuthenticatedApp();
-    await openReservations();
-    await settleAsyncWork();
-
-    await act(async () => {
-      const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav button")).find(
-        (candidate) => candidate.textContent?.includes("Sign out"),
-      );
-      if (!button) throw new Error("Sign out button not found");
-      button.click();
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain("Sign in");
-    expect(container.textContent).not.toContain("My Reservations");
-    expect(container.textContent).not.toContain("BKG-ABC123");
-  });
-
-  it("does not expose the reservations navigation or call its API unauthenticated", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    await act(async () => root.render(<App />));
-
-    expect(container.textContent).not.toContain("My Reservations");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("shows a Pay button, amount and payment status for a PENDING_PAYMENT reservation", async () => {
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-    );
-    await clickButton("View Details");
-    await settleAsyncWork();
-
-    const detail = container.querySelector<HTMLElement>(".reservation-detail");
-    expect(detail?.textContent).toContain("PENDING PAYMENT");
-    expect(detail?.textContent).toContain("Amount");
-    expect(detail?.textContent).toContain("₹200.00");
-    expect(detail?.textContent).toContain("INITIATED");
-    expect(container.querySelector(".payment-actions")).not.toBeNull();
-    const payButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Pay",
-    );
-    expect(payButton).toBeDefined();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
-
-  it("initiates payment with a retained Idempotency-Key and shows the transaction id", async () => {
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
-      );
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
-
-    const initiateCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/payments/"));
-    expect(initiateCall).toBeDefined();
-    const options = initiateCall![1];
-    expect(options).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({ reservationCode: "BKG-PENDING987" }),
-      headers: { Authorization: "Bearer access-token" },
-    });
-    const idempotencyKey = (options!.headers as Record<string, string>)["Idempotency-Key"];
-    expect(idempotencyKey).toBeTruthy();
-    expect(container.textContent).toContain("Transaction ID:");
-    expect(container.textContent).toContain("MOCK-BKG-PENDING987-200");
-    expect(container.textContent).toContain("Verify Payment");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("reuses the retained Idempotency-Key across retries of the same initiation", async () => {
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
-      );
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
-
-    const initiateCalls = fetchMock.mock.calls.filter(([url]) =>
-      String(url).includes("/payments/"),
-    );
-    expect(initiateCalls).toHaveLength(2);
-    const firstKey = (initiateCalls[0]![1]!.headers as Record<string, string>)["Idempotency-Key"];
-    const secondKey = (initiateCalls[1]![1]!.headers as Record<string, string>)["Idempotency-Key"];
-    expect(firstKey).toBeTruthy();
-    expect(secondKey).toBe(firstKey);
-  });
-
-  it("prevents duplicate payment initiation while a request is in flight", async () => {
-    let resolveInitiate!: (value: Response) => void;
-    const initiateRequest = new Promise<Response>((resolve) => {
-      resolveInitiate = resolve;
-    });
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockReturnValueOnce(initiateRequest);
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-
-    expect(container.textContent).toContain("Initiating payment...");
-    const payingButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent?.includes("Initiating payment..."),
-    );
-    expect(payingButton?.disabled).toBe(true);
-    act(() => payingButton?.click());
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-
-    resolveInitiate(new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }));
-    await settleAsyncWork();
-  });
-
-  it("verifies the payment and updates the reservation to CONFIRMED", async () => {
-    const confirmedReservation = {
-      ...pendingReservation,
-      state: "CONFIRMED" as const,
-      paymentStatus: "SUCCESS" as const,
-      confirmedAt: "2026-09-02T10:06:00.000Z",
-      updatedAt: "2026-09-02T10:06:00.000Z",
-    };
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            payment: { ...initiatedPayment, status: "SUCCESS" },
-            reservation: confirmedReservation,
+  it("shows a loading notice and then an empty state", async () => {
+    let resolveList!: (value: Response) => void;
+    routeFetch([
+      [
+        "/reservations",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveList = resolve;
           }),
-          { status: 200 },
-        ),
-      );
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
-    await clickButton("Verify Payment");
-    await settleAsyncWork();
-
-    const verifyCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/verify"));
-    expect(verifyCall).toBeDefined();
-    expect(String(verifyCall![0])).toContain("/payments/MOCK-BKG-PENDING987-200/verify");
-    expect(verifyCall![1]).toMatchObject({ method: "POST" });
-
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("confirmed");
-    const detail = container.querySelector<HTMLElement>(".reservation-detail");
-    expect(detail?.textContent).toContain("CONFIRMED");
-    expect(detail?.textContent).toContain("SUCCESS");
-    expect(container.querySelector(".payment-actions")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+      ],
+    ]);
+    await renderBookings();
+    expect(container.textContent).toContain("Loading your bookings...");
+    await act(async () => resolveList(json({ reservations: [] })));
+    await settle();
+    expect(container.textContent).not.toContain("Loading your bookings...");
+    expect(container.textContent).toContain(
+      "You have no bookings yet. Find parking to make your first one.",
+    );
   });
 
-  it("shows a friendly inline error when payment initiation fails", async () => {
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ error: { code: "PAYMENT_NOT_PENDING", message: "Backend error" } }),
-          { status: 409 },
-        ),
-      );
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
+  it("shows a network error and retries", async () => {
+    let calls = 0;
+    routeFetch([
+      [
+        "/reservations",
+        () =>
+          calls++ === 0
+            ? json({ error: { message: "boom" } }, 503)
+            : json({ reservations: [reservation] }),
+      ],
+    ]);
+    await renderBookings();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("boom");
+    await act(async () => buttonWithText("Try again").click());
+    await settle();
+    expect(container.textContent).toContain("BKG-ABC123");
+  });
 
+  it("shows the session-expired message for a 401", async () => {
+    routeFetch([["/reservations", () => json({ error: { message: "nope" } }, 401)]]);
+    await renderBookings();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Your session expired. Please sign in again.",
+    );
+  });
+
+  it("renders the correct action per status", async () => {
+    routeFetch([
+      [
+        "/reservations",
+        () =>
+          json({
+            reservations: [
+              pendingReservation,
+              reservation,
+              activeReservation,
+              completedReservation,
+            ],
+          }),
+      ],
+    ]);
+    await renderBookings();
+
+    expect(buttonWithText("Pay & confirm")).toBeTruthy();
+    await act(async () => buttonWithText("Cancel").click());
+    expect(container.textContent).not.toContain("Exit parking");
+    await act(async () => buttonWithText("Keep booking").click());
+
+    await act(async () => buttonWithText("Upcoming").click());
+    await act(async () => buttonWithText("Completed").click());
+    expect(container.textContent).toContain("This booking is completed.");
+
+    await act(async () => buttonWithText("Active").click());
+    expect(buttonWithText("Exit parking")).toBeTruthy();
+  });
+
+  it("pays and confirms a pending reservation", async () => {
+    const fetchMock = routeFetch([
+      ["/reservations", () => json({ reservations: [pendingReservation] })],
+      ["/payments/initiate", () => json({ payment: initiatedPayment })],
+      [
+        "/payments/MOCK-BKG-PENDING987-200/verify",
+        () => json({ payment: succeededPayment, reservation: confirmedReservation }),
+      ],
+    ]);
+    await renderBookings();
+
+    await act(async () => buttonWithText("Pay & confirm").click());
+    await settle();
+
+    const calls = urls(fetchMock);
+    expect(calls.some((url) => url.includes("/payments/initiate"))).toBe(true);
+    expect(calls.some((url) => url.includes("/payments/MOCK-BKG-PENDING987-200/verify"))).toBe(
+      true,
+    );
+    expect(container.querySelector('[role="status"]')?.textContent).toContain(
+      "Payment confirmed. Your booking is now active.",
+    );
+  });
+
+  it("shows a payment error inline", async () => {
+    routeFetch([
+      ["/reservations", () => json({ reservations: [pendingReservation] })],
+      [
+        "/payments/initiate",
+        () =>
+          json(
+            { error: { code: "PAYMENT_NOT_PENDING", message: "no longer waiting for payment" } },
+            409,
+          ),
+      ],
+    ]);
+    await renderBookings();
+    await act(async () => buttonWithText("Pay & confirm").click());
+    await settle();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "no longer waiting for payment",
     );
-    expect(container.textContent).toContain("Pay");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(buttonWithText("Pay & confirm")).toBeTruthy();
   });
 
-  it("does not show the Pay button for an already-confirmed reservation", async () => {
-    const fetchMock = await renderReservationList([reservation]);
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ reservation }), { status: 200 }));
-    await clickButton("View Details");
-    await settleAsyncWork();
+  it("cancels a confirmed booking after inline confirmation and refreshes", async () => {
+    const fetchMock = routeFetch([
+      ["/reservations/BKG-ABC123/cancel", () => json({ reservation: cancelledReservation })],
+      ["/reservations", () => json({ reservations: [reservation] })],
+    ]);
+    await renderBookings();
 
-    expect(container.querySelector(".payment-actions")).toBeNull();
-    const payButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => button.textContent === "Pay",
+    await act(async () => buttonWithText("Cancel").click());
+    expect(container.textContent).toContain("Cancel this booking?");
+    await act(async () => buttonWithText("Yes, cancel").click());
+    await settle();
+
+    const calls = urls(fetchMock);
+    expect(calls.some((url) => url.endsWith("/reservations/BKG-ABC123/cancel"))).toBe(true);
+  });
+
+  it("keeps the booking when cancellation is dismissed without a request", async () => {
+    const fetchMock = routeFetch([["/reservations", () => json({ reservations: [reservation] })]]);
+    await renderBookings();
+
+    await act(async () => buttonWithText("Cancel").click());
+    await act(async () => buttonWithText("Keep booking").click());
+
+    expect(container.textContent).not.toContain("Cancel this booking?");
+    expect(urls(fetchMock).some((url) => url.includes("/cancel"))).toBe(false);
+  });
+
+  it("prevents duplicate cancellation submissions", async () => {
+    let resolveCancel!: (value: Response) => void;
+    const fetchMock = routeFetch([
+      [
+        "/reservations/BKG-ABC123/cancel",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveCancel = resolve;
+          }),
+      ],
+      ["/reservations", () => json({ reservations: [reservation] })],
+    ]);
+    await renderBookings();
+
+    await act(async () => buttonWithText("Cancel").click());
+    await act(async () => buttonWithText("Yes, cancel").click());
+    expect(container.textContent).toContain("Cancelling...");
+    const confirmButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".cancellation-actions button"),
     );
-    expect(payButton).toBeUndefined();
+    confirmButtons.forEach((button) => expect(button.disabled).toBe(true));
+    expect(urls(fetchMock).filter((url) => url.includes("/cancel")).length).toBe(1);
+
+    await act(async () => resolveCancel(json({ reservation: cancelledReservation })));
+    await settle();
   });
 
-  it("never exposes a transaction-id input or the __FAIL__ escape hatch in the UI", async () => {
-    const fetchMock = await renderReservationList([pendingReservation]);
-    fetchMock
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ reservation: pendingReservation }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ payment: initiatedPayment }), { status: 200 }),
-      );
-    await clickButton("View Details");
-    await settleAsyncWork();
-    await clickButton("Pay");
-    await settleAsyncWork();
+  it("shows cancellation errors and keeps the booking visible", async () => {
+    routeFetch([
+      [
+        "/reservations/BKG-ABC123/cancel",
+        () =>
+          json({ error: { code: "CANNOT_CANCEL_COMPLETED", message: "already completed" } }, 422),
+      ],
+      ["/reservations", () => json({ reservations: [reservation] })],
+    ]);
+    await renderBookings();
+    await act(async () => buttonWithText("Cancel").click());
+    await act(async () => buttonWithText("Yes, cancel").click());
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("already completed");
+    expect(container.textContent).toContain("Confirmed");
+  });
 
-    expect(container.querySelector(".payment-actions input")).toBeNull();
+  it("exits an active session", async () => {
+    const fetchMock = routeFetch([
+      ["/reservations", () => json({ reservations: [activeReservation] })],
+      ["/parking-sessions/by-reservation/BKG-ACTIVE456", () => json({ session })],
+      ["/parking-sessions/55/exit", () => json({ session: { ...session, status: "COMPLETED" } })],
+    ]);
+    await renderBookings();
+
+    await act(async () => buttonWithText("Exit parking").click());
+    await settle();
+
+    const calls = urls(fetchMock);
+    expect(
+      calls.some((url) => url.includes("/parking-sessions/by-reservation/BKG-ACTIVE456")),
+    ).toBe(true);
+    expect(calls.some((url) => url.endsWith("/parking-sessions/55/exit"))).toBe(true);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Vehicle exited");
+  });
+
+  it("asks the app to open the pass for a confirmed booking", async () => {
+    const onViewPass = vi.fn();
+    routeFetch([["/reservations", () => json({ reservations: [reservation] })]]);
+    await renderBookings({ onViewPass });
+
+    await act(async () => buttonWithText("View pass").click());
+    expect(onViewPass).toHaveBeenCalledWith(reservation);
+  });
+});
+
+describe("BookingFlowScreen", () => {
+  function renderFlow() {
+    return act(async () =>
+      root.render(
+        <BookingFlowScreen
+          facility={facility}
+          accessToken="access-token"
+          onExit={vi.fn()}
+          onFinished={vi.fn()}
+        />,
+      ),
+    );
+  }
+
+  it("loads availability and lets the user pick a bookable spot", async () => {
+    routeFetch([["/parking/4/availability", () => json(availability)]]);
+    await renderFlow();
+    await settle();
+
+    expect(container.textContent).toContain("Select a slot");
+    const options = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button[role="option"]'),
+    );
+    expect(options.map((option) => option.textContent)).toEqual(["A01car", "A04car"]);
+    options.forEach((option) => expect(option.disabled).toBe(false));
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[role="option"]')!.click(),
+    );
+    expect(buttonWithText("Book this spot")).toBeTruthy();
+  });
+
+  it("shows an availability error", async () => {
+    routeFetch([
+      ["/parking/4/availability", () => json({ error: { message: "Facility offline" } }, 503)],
+    ]);
+    await renderFlow();
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Facility offline");
+    expect(buttonWithText("Back to facilities")).toBeTruthy();
+  });
+
+  it("reserves, pays, and reveals a parking pass without a transaction-id input", async () => {
+    const fetchMock = routeFetch([
+      ["/parking/4/availability", () => json(availability)],
+      ["/payments/initiate", () => json({ payment: initiatedPayment })],
+      [
+        "/payments/MOCK-BKG-PENDING987-200/verify",
+        () => json({ payment: succeededPayment, reservation: confirmedReservation }),
+      ],
+      [
+        "/parking-sessions/by-reservation/BKG-PENDING987/pass",
+        () => json({ verificationToken: "TOK-123" }),
+      ],
+      // POST /reservations (create)
+      [
+        "/reservations",
+        (_input, init) => {
+          if ((init?.method ?? "GET") === "POST")
+            return json({ reservation: pendingReservation }, 201);
+          return json({ error: { message: "Not found" } }, 404);
+        },
+      ],
+    ]);
+    await renderFlow();
+    await settle();
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[role="option"]')!.click(),
+    );
+    await act(async () => buttonWithText("Book this spot").click());
+    expect(container.textContent).toContain("Booking details");
+
+    await act(async () => buttonWithText("Reserve now").click());
+    await settle();
+
+    expect(container.textContent).toContain("Confirm & pay");
+    expect(container.textContent).toContain("Charged amount");
+    expect(container.textContent).toContain("BKG-PENDING987");
+
+    const createCall = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).includes("/reservations") && init?.method === "POST",
+    )!;
+    expect(JSON.parse(String(createCall[1]!.body))).toMatchObject({
+      facilityId: 4,
+      slotId: 9,
+    });
+
+    await act(async () => buttonWithText("View parking pass").click());
+    expect(container.textContent).toContain("Parking Pass");
+    await act(async () => buttonWithText("Show parking pass").click());
+    await settle();
+
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "TOK-123",
+    );
     expect(container.textContent).not.toContain("__FAIL__");
-    expect(container.textContent).toContain("MOCK-BKG-PENDING987-200");
+    expect(
+      container.querySelector('input[placeholder*="transaction" i], .payment-actions input'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("MOCK-BKG-UNIQUE-200");
+  });
+
+  it("shows the reservation creation error", async () => {
+    routeFetch([
+      ["/parking/4/availability", () => json(availability)],
+      [
+        "/reservations",
+        (_input, init) => {
+          if ((init?.method ?? "GET") === "POST")
+            return json(
+              { error: { code: "RESERVATION_CONFLICT", message: "no longer available " } },
+              409,
+            );
+          return json({ error: { message: "Not found" } }, 404);
+        },
+      ],
+    ]);
+    await renderFlow();
+    await settle();
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[role="option"]')!.click(),
+    );
+    await act(async () => buttonWithText("Book this spot").click());
+    await act(async () => buttonWithText("Reserve now").click());
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("no longer available");
   });
 });

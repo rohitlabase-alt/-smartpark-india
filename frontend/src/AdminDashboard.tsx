@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Operator, OperatorStatus } from "@smartpark/shared";
 import { approveOperator, listAdminOperators, rejectOperator, reviewOperator } from "./api/admin";
 import { AuthApiError } from "./api/auth";
+import AdminAudit from "./AdminAudit";
 import AdminFacilities from "./AdminFacilities";
+import AdminOverview from "./AdminOverview";
 import AdminPlatform from "./AdminPlatform";
 
 type LoadState = "loading" | "success" | "error";
 type Action = "review" | "approve" | "reject";
-type AdminSection = "operators" | "facilities" | "platform";
+type AdminSection = "overview" | "operators" | "facilities" | "platform" | "audit";
 
 const STATUS_TABS: { status: OperatorStatus; label: string }[] = [
   { status: "PENDING", label: "Pending" },
@@ -73,26 +75,36 @@ function availableActions(operator: Operator): { action: Action }[] {
 }
 
 export default function AdminDashboard({ accessToken, onError }: AdminDashboardProps) {
-  const [section, setSection] = useState<AdminSection>("operators");
+  const [section, setSection] = useState<AdminSection>("overview");
   const [status, setStatus] = useState<OperatorStatus>("PENDING");
+
+  const sectionNotes: Record<AdminSection, string> = {
+    overview: "Platform overview",
+    operators: "Operator verification",
+    facilities: "Facility control",
+    platform: "Platform analytics",
+    audit: "Audit trail",
+  };
 
   return (
     <section className="admin-dashboard" aria-labelledby="admin-dashboard-title">
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Verification</p>
+          <p className="section-kicker">Control room</p>
           <h2 id="admin-dashboard-title">Admin Dashboard</h2>
         </div>
-        <span className="reservation-count">
-          {section === "operators"
-            ? "Operator verification"
-            : section === "facilities"
-              ? "Facility control"
-              : "Platform analytics"}
-        </span>
+        <span className="reservation-count">{sectionNotes[section]}</span>
       </div>
 
       <div className="admin-section-switch" role="group" aria-label="Admin section">
+        <button
+          type="button"
+          className={section === "overview" ? "admin-section-tab selected" : "admin-section-tab"}
+          aria-pressed={section === "overview"}
+          onClick={() => setSection("overview")}
+        >
+          Overview
+        </button>
         <button
           type="button"
           className={section === "operators" ? "admin-section-tab selected" : "admin-section-tab"}
@@ -117,9 +129,23 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
         >
           Platform
         </button>
+        <button
+          type="button"
+          className={section === "audit" ? "admin-section-tab selected" : "admin-section-tab"}
+          aria-pressed={section === "audit"}
+          onClick={() => setSection("audit")}
+        >
+          Audit Trail
+        </button>
       </div>
 
-      {section === "operators" ? (
+      {section === "overview" ? (
+        <AdminOverview
+          accessToken={accessToken}
+          onError={onError}
+          onNavigate={(target) => setSection(target)}
+        />
+      ) : section === "operators" ? (
         <OperatorVerification
           accessToken={accessToken}
           onError={onError}
@@ -128,8 +154,10 @@ export default function AdminDashboard({ accessToken, onError }: AdminDashboardP
         />
       ) : section === "facilities" ? (
         <AdminFacilities accessToken={accessToken} onError={onError} />
-      ) : (
+      ) : section === "platform" ? (
         <AdminPlatform accessToken={accessToken} onError={onError} />
+      ) : (
+        <AdminAudit accessToken={accessToken} onError={onError} />
       )}
     </section>
   );

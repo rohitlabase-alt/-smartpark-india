@@ -1,13 +1,43 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PublicUser } from "@smartpark/shared";
+import {
+  OPERATOR_STATUSES,
+  PAYMENT_STATUSES,
+  RESERVATION_STATES,
+  type PlatformSummary,
+  type PublicUser,
+} from "@smartpark/shared";
 import App from "./App";
 import { clearMemorySession, setMemorySession, type AuthSession } from "./api/auth";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+function zeroMap<T extends readonly string[]>(keys: T): Record<(typeof keys)[number], number> {
+  return Object.fromEntries(keys.map((key) => [key, 0])) as Record<(typeof keys)[number], number>;
+}
+
+const emptySummary: PlatformSummary = {
+  users: 1,
+  operators: 0,
+  operatorsByStatus: zeroMap(OPERATOR_STATUSES),
+  facilities: 0,
+  activeFacilities: 0,
+  inactiveFacilities: 0,
+  facilitiesByStatus: zeroMap(OPERATOR_STATUSES),
+  parkingSlots: 0,
+  reservations: 0,
+  reservationsByStatus: zeroMap(RESERVATION_STATES),
+  payments: 0,
+  paymentsByStatus: zeroMap(PAYMENT_STATUSES),
+  activeParkingSessions: 0,
+  occupiedSlots: 0,
+  availableSlots: 0,
+  recentAuditEvents: [],
+  recentAuditEventCount: 0,
+};
 
 const adminUser: PublicUser = {
   id: 1,
@@ -63,6 +93,22 @@ const session = {
 let container: HTMLDivElement;
 let root: Root;
 
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+function routeFetch(user: PublicUser, handlers: Array<[string, () => Response]> = []) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    for (const [fragment, handler] of handlers) {
+      if (url.includes(fragment)) return handler();
+    }
+    if (url.includes("/parking/facilities")) return json({ facilities: [] });
+    if (url.includes("/auth/me")) return json(user);
+    return json({});
+  });
+}
+
 async function settle() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -71,11 +117,15 @@ async function settle() {
 
 async function renderAppWithUser(user: PublicUser) {
   setMemorySession({ ...session, user });
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(JSON.stringify(user), { status: 200 }),
-  );
   await act(async () => root.render(<App />));
   await settle();
+}
+
+function goToProfileTab() {
+  const profileTab = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+    (button) => button.textContent?.includes("Profile"),
+  )!;
+  act(() => profileTab.click());
 }
 
 function buttonWithText(text: string): HTMLButtonElement | null {
@@ -101,91 +151,110 @@ afterEach(() => {
 });
 
 describe("admin dashboard navigation", () => {
-  it("shows Admin Control Panel button for ADMIN users", async () => {
+  it("shows the Admin Console entry for ADMIN users", async () => {
+    routeFetch(adminUser);
     await renderAppWithUser(adminUser);
-    const adminButton = buttonWithText("Admin Control Panel");
-    expect(adminButton).not.toBeNull();
-    expect(adminButton?.tagName).toBe("BUTTON");
+    goToProfileTab();
+    const adminEntry = buttonWithText("Admin Console");
+    expect(adminEntry).not.toBeNull();
+    expect(container.textContent).not.toContain("Platform Overview");
   });
 
-  it("opens AdminDashboard when the Admin Control Panel button is clicked", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(adminUser), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operators: [] }), { status: 200 }));
+  it("opens AdminDashboard when the Admin Console entry is clicked", async () => {
+    const fetchMock = routeFetch(adminUser, [
+      ["/admin/platform-summary", () => json(emptySummary)],
+    ]);
     await renderAppWithUser(adminUser);
+    goToProfileTab();
 
-    await act(async () => buttonWithText("Admin Control Panel")!.click());
+    await act(async () => buttonWithText("Admin Console")!.click());
     await settle();
 
+    expect(container.textContent).toContain("Admin Console");
     expect(container.textContent).toContain("Admin Dashboard");
-    expect(container.textContent).toContain("Operator verification");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1]![0]).toContain("/admin/operators");
+    expect(container.textContent).toContain("Platform Overview");
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("/admin/platform-summary")),
+    ).toBe(true);
   });
 
-  it("passes the current access token to AdminDashboard", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify(adminUser), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ operators: [] }), { status: 200 }));
+  it("passes the current access token to the admin API", async () => {
+    const fetchMock = routeFetch(adminUser, [
+      ["/admin/platform-summary", () => json(emptySummary)],
+    ]);
     await renderAppWithUser(adminUser);
+    goToProfileTab();
 
-    await act(async () => buttonWithText("Admin Control Panel")!.click());
+    await act(async () => buttonWithText("Admin Console")!.click());
     await settle();
 
-    const authHeader = fetchMock.mock.calls[1]![1]?.headers as Record<string, string> | undefined;
+    const summaryCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/admin/platform-summary"),
+    )!;
+    const authHeader = summaryCall[1]?.headers as Record<string, string> | undefined;
     expect(authHeader?.Authorization).toBe("Bearer test-access-token");
   });
 
-  it("does not show Admin Control Panel button for normal users", async () => {
+  it("does not show the Admin Console entry for normal users", async () => {
+    routeFetch(normalUser);
     await renderAppWithUser(normalUser);
-    expect(buttonWithText("Admin Control Panel")).toBeNull();
-    expect(container.textContent).toContain("Check a parking facility");
-    expect(container.textContent).toContain("Sign out");
+    goToProfileTab();
+    expect(buttonWithText("Admin Console")).toBeNull();
+    expect(container.textContent).toContain("Register as a parking operator");
   });
 
-  it("does not show Admin Control Panel button for operator-only users", async () => {
+  it("does not show the Admin Console entry for operator-only users", async () => {
+    routeFetch(operatorUser);
     await renderAppWithUser(operatorUser);
-    expect(buttonWithText("Admin Control Panel")).toBeNull();
-    expect(container.textContent).toContain("Operator Dashboard");
+    goToProfileTab();
+    expect(buttonWithText("Admin Console")).toBeNull();
+    expect(container.textContent).toContain("Parking Operations");
   });
 
   it("hides admin controls and makes no admin request when unauthenticated", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const fetchMock = routeFetch(normalUser);
     await act(async () => root.render(<App />));
-    expect(buttonWithText("Admin Control Panel")).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    await settle();
+    goToProfileTab();
+    expect(buttonWithText("Admin Console")).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/admin/"))).toBe(false);
   });
 
   it("removes admin access after logout", async () => {
+    routeFetch(adminUser, [["/auth/logout", () => new Response(null, { status: 204 })]]);
     await renderAppWithUser(adminUser);
-    const signOut = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav button")).find(
-      (button) => button.textContent?.includes("Sign out"),
-    )!;
-    await act(async () => signOut.click());
-    expect(buttonWithText("Admin Control Panel")).toBeNull();
-    expect(container.textContent).toContain("Sign in");
+    goToProfileTab();
+
+    await act(async () => buttonWithText("Sign out")!.click());
+    await settle();
+
+    expect(buttonWithText("Admin Console")).toBeNull();
+    expect(container.textContent).toContain("Sign in to book parking");
   });
 
-  it("shows Admin Control Panel for users with both ADMIN and PARKING_OPERATOR roles", async () => {
+  it("shows both Admin Console and Parking Operations for users with both roles", async () => {
+    routeFetch(adminAndOperatorUser);
     await renderAppWithUser(adminAndOperatorUser);
-    expect(buttonWithText("Admin Control Panel")).not.toBeNull();
-    expect(buttonWithText("Operator Dashboard")).not.toBeNull();
+    goToProfileTab();
+    expect(buttonWithText("Admin Console")).not.toBeNull();
+    expect(buttonWithText("Parking Operations")).not.toBeNull();
   });
 
-  it("preserves availability screen and all other navigation for admin users", async () => {
+  it("preserves the regular navigation for admin users", async () => {
+    routeFetch(adminUser);
     await renderAppWithUser(adminUser);
-    expect(container.textContent).toContain("Check a parking facility");
-    expect(container.textContent).toContain("My Reservations");
-    expect(buttonWithText("Admin Control Panel")).not.toBeNull();
+    expect(container.textContent).toContain("Parking near you");
+    expect(container.textContent).toContain("My Bookings");
+    goToProfileTab();
     expect(buttonWithText("Sign out")).not.toBeNull();
+    expect(buttonWithText("Admin Console")).not.toBeNull();
   });
 
   it("does not allow non-admin users to open the admin screen through the UI", async () => {
+    routeFetch(normalUser);
     await renderAppWithUser(normalUser);
-    expect(buttonWithText("Admin Control Panel")).toBeNull();
+    goToProfileTab();
+    expect(buttonWithText("Admin Console")).toBeNull();
     expect(container.textContent).not.toContain("Admin Dashboard");
-    expect(container.textContent).not.toContain("Operator verification");
   });
 });

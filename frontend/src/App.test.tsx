@@ -1,152 +1,177 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import type { PublicParkingFacility, PublicUser } from "@smartpark/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { clearMemorySession, setMemorySession, type AuthSession } from "./api/auth";
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const response = {
-  facilityId: "PUN-000001",
-  totalSlots: 2,
-  availableSlots: 1,
+const facility: PublicParkingFacility = {
+  id: 1,
+  parkingId: "PUN-000001",
+  name: "Shivaji Nagar Public Parking",
+  description: null,
+  type: "public",
+  city: "Pune",
+  state: "Maharashtra",
+  area: "Shivaji Nagar",
+  address: "FC Road",
+  capacity: 40,
+  hourlyRate: 80,
+  availabilityMode: "MANUAL",
+  totalSlots: 10,
+  availableSlots: 6,
+  availableVehicleTypes: ["car", "bike"],
   isLive: true,
-  sources: ["MANUAL"],
-  lastUpdatedAt: "2026-09-01T10:00:00.000Z",
   confidence: "HIGH",
-  disclaimer: "Operator-reported availability. Not guaranteed.",
-  slots: [
-    {
-      id: 1,
-      slotCode: "A01",
-      facilityId: 1,
-      zoneId: null,
-      vehicleType: "car",
-      status: "AVAILABLE",
-      reservationsEnabled: true,
-      createdAt: "2026-09-01T09:00:00.000Z",
-      updatedAt: "2026-09-01T10:00:00.000Z",
-    },
-    {
-      id: 2,
-      slotCode: "A02",
-      facilityId: 1,
-      zoneId: null,
-      vehicleType: "car",
-      status: "OCCUPIED",
-      reservationsEnabled: true,
-      createdAt: "2026-09-01T09:00:00.000Z",
-      updatedAt: "2026-09-01T10:00:00.000Z",
-    },
-  ],
+  lastUpdatedAt: "2026-09-01T10:00:00.000Z",
 };
+
+const user: PublicUser = {
+  id: 7,
+  email: "driver@example.com",
+  fullName: "Asha Driver",
+  phone: null,
+  locale: "en",
+  status: "ACTIVE",
+  roles: ["USER"],
+  createdAt: "2026-09-01T10:00:00.000Z",
+};
+
+const session = {
+  accessToken: "access-token",
+  refreshToken: "refresh-token",
+  expiresInSeconds: 1800,
+  user,
+} satisfies AuthSession;
 
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderApp() {
-  await act(async () => {
-    root.render(<App />);
+function routeFetch(handlers: Record<string, () => Response | Promise<Response>>) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    for (const [fragment, handler] of Object.entries(handlers)) {
+      if (url.includes(fragment)) return handler();
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
   });
 }
 
-async function submitFacilityId(value: string) {
-  const input = container.querySelector<HTMLInputElement>("#facility-id")!;
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-  setter.call(input, value);
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+async function renderAppAndSettle() {
+  act(() => root.render(<App />));
   await act(async () => {
-    container.querySelector<HTMLFormElement>("form")!.requestSubmit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
-beforeEach(async () => {
+function selectTab(label: string) {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+    (candidate) => candidate.textContent?.includes(label),
+  )!;
+  act(() => button.click());
+}
+
+beforeEach(() => {
+  clearMemorySession();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
-  await renderApp();
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  clearMemorySession();
   vi.restoreAllMocks();
 });
 
-describe("public availability screen", () => {
-  it("renders the initial state with accessible controls", () => {
-    expect(container.querySelector("h1")?.textContent).toContain("SmartPark India");
-    expect(container.querySelector("label")?.textContent).toBe("Facility ID");
-    expect(container.querySelector(".search-controls button")?.textContent).toContain(
-      "Check availability",
-    );
-    expect(container.textContent).toContain("Enter a facility ID");
-  });
-
-  it("shows loading while the availability request is pending", async () => {
-    let resolveRequest!: (value: Response) => void;
-    vi.spyOn(globalThis, "fetch").mockReturnValue(
-      new Promise((resolve) => {
-        resolveRequest = resolve;
-      }),
-    );
-
-    await submitFacilityId("1");
-    expect(container.textContent).toContain("Loading facility availability...");
-    expect(container.querySelector(".search-controls button")?.hasAttribute("disabled")).toBe(true);
-
-    resolveRequest(new Response(JSON.stringify(response), { status: 200 }));
-    await act(async () => {
-      await Promise.resolve();
+describe("app shell", () => {
+  it("surfaces a facilities outage with a retry action", async () => {
+    routeFetch({
+      "/parking/facilities": () =>
+        new Response(JSON.stringify({ error: { message: "Availability service is down" } }), {
+          status: 503,
+        }),
     });
-  });
-
-  it("renders live status, confidence, timestamp, disclaimer, and slot statuses", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify(response), { status: 200 }),
-    );
-
-    await submitFacilityId("1");
-    expect(container.textContent).toContain("Live now");
-    expect(container.textContent).toContain("HIGH");
-    expect(container.textContent).toContain("9/1/2026");
-    expect(container.textContent).toContain(response.disclaimer);
-    expect(container.textContent).toContain("A01");
-    expect(container.textContent).toContain("AVAILABLE");
-    expect(container.textContent).toContain("A02");
-    expect(container.textContent).toContain("OCCUPIED");
-  });
-
-  it("renders an empty state for a facility with zero slots", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ ...response, totalSlots: 0, availableSlots: 0, slots: [] }), {
-        status: 200,
-      }),
-    );
-
-    await submitFacilityId("1");
-    expect(container.textContent).toContain("No slots are currently reported");
-    expect(container.textContent).toContain("Available0");
-    expect(container.textContent).toContain("Total slots0");
-  });
-
-  it("handles invalid IDs, facility-not-found, and network errors", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    await submitFacilityId("");
-    expect(container.textContent).toContain("Enter a valid positive facility ID.");
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ error: { message: "Facility not found" } }), { status: 404 }),
-    );
-    await submitFacilityId("999");
+    await renderAppAndSettle();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "This parking facility is currently unavailable.",
+      "Availability service is down",
     );
+    expect(container.textContent).toContain("Try again");
+    expect(container.textContent).toContain("Sign in to book parking");
+  });
 
-    fetchMock.mockRejectedValueOnce(new Error("Network unavailable"));
-    await submitFacilityId("1");
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Network unavailable");
+  it("renders the home shell with navigation and real facility cards", async () => {
+    routeFetch({
+      "/parking/facilities": () =>
+        new Response(JSON.stringify({ facilities: [facility] }), { status: 200 }),
+    });
+    await renderAppAndSettle();
+    expect(container.textContent).toContain("Parking near you");
+    expect(container.textContent).toContain(facility.name);
+    expect(container.textContent).toContain(facility.parkingId);
+    expect(container.textContent).toContain("View slots");
+    for (const label of ["Home", "Find Parking", "Bookings", "Pass", "Profile"]) {
+      expect(container.textContent).toContain(label);
+    }
+  });
+
+  it("navigates between the main tabs for a guest", async () => {
+    routeFetch({
+      "/parking/facilities": () =>
+        new Response(JSON.stringify({ facilities: [facility] }), { status: 200 }),
+    });
+    await renderAppAndSettle();
+
+    selectTab("Find Parking");
+    expect(container.textContent).toContain("Find Parking");
+    expect(container.textContent).toContain(facility.name);
+
+    selectTab("Bookings");
+    expect(container.textContent).toContain("Your bookings");
+    expect(container.textContent).toContain("Sign in to see your bookings and parking passes.");
+
+    selectTab("Pass");
+    expect(container.textContent).toContain("Parking pass");
+    expect(container.textContent).toContain("Sign in to access your digital parking pass.");
+
+    selectTab("Profile");
+    expect(container.textContent).toContain("Your profile");
+    expect(container.textContent).toContain("Create account");
+
+    selectTab("Home");
+    expect(container.textContent).toContain("Parking near you");
+  });
+
+  it("gates booking behind sign-in for guests", async () => {
+    routeFetch({
+      "/parking/facilities": () =>
+        new Response(JSON.stringify({ facilities: [facility] }), { status: 200 }),
+    });
+    await renderAppAndSettle();
+    act(() => container.querySelector<HTMLButtonElement>(".facility-card")!.click());
+    expect(container.textContent).toContain("Welcome back");
+    expect(container.querySelector("#auth-email")).not.toBeNull();
+
+    act(() => container.querySelector<HTMLButtonElement>(".sp-subpage-back")!.click());
+    expect(container.textContent).toContain("Parking near you");
+  });
+
+  it("opens the booking flow for an authenticated user", async () => {
+    const fetchMock = routeFetch({
+      "/parking/facilities": () =>
+        new Response(JSON.stringify({ facilities: [facility] }), { status: 200 }),
+      "/auth/me": () => new Response(JSON.stringify(user), { status: 200 }),
+    });
+    setMemorySession(session);
+    await renderAppAndSettle();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/me"))).toBe(true);
+    act(() => container.querySelector<HTMLButtonElement>(".facility-card")!.click());
+    expect(container.textContent).toContain(facility.name);
+    expect(container.querySelector(".sp-subpage-back")).not.toBeNull();
   });
 });

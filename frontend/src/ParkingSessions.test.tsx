@@ -1,9 +1,21 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ParkingSession, PublicUser } from "@smartpark/shared";
+import type { PublicParkingFacility, PublicUser } from "@smartpark/shared";
 import App from "./App";
-import { clearMemorySession, setMemorySession, type AuthSession } from "./api/auth";
+import { PassScreen } from "./screens/PassScreen";
+import { clearMemorySession, setMemorySession, API_BASE_URL, type AuthSession } from "./api/auth";
+
+const qrcodeMock = vi.hoisted(() => {
+  const calls: string[] = [];
+  const toDataURL = (text: string): Promise<string> => {
+    calls.push(text);
+    return Promise.resolve(`data:image/png;base64,${btoa(text)}`);
+  };
+  return { calls, toDataURL, reset: () => void calls.splice(0) };
+});
+
+vi.mock("qrcode", () => ({ toDataURL: qrcodeMock.toDataURL }));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -27,6 +39,27 @@ const session = {
   user,
 } satisfies AuthSession;
 
+const facility: PublicParkingFacility = {
+  id: 4,
+  parkingId: "PUN-000004",
+  name: "Shivaji Nagar Public Parking",
+  description: null,
+  type: "public",
+  city: "Pune",
+  state: "Maharashtra",
+  area: "Shivaji Nagar",
+  address: "FC Road",
+  capacity: 40,
+  hourlyRate: 100,
+  availabilityMode: "MANUAL",
+  totalSlots: 4,
+  availableSlots: 2,
+  availableVehicleTypes: ["car"],
+  isLive: true,
+  confidence: "HIGH",
+  lastUpdatedAt: "2026-09-01T10:00:00.000Z",
+};
+
 const confirmedReservation = {
   id: 12,
   reservationCode: "BKG-ABC123",
@@ -46,6 +79,22 @@ const confirmedReservation = {
   updatedAt: "2026-09-01T10:05:00.000Z",
 };
 
+const otherConfirmedReservation = {
+  ...confirmedReservation,
+  id: 15,
+  reservationCode: "BKG-OTHER222",
+  slotId: 11,
+  startsAt: "2026-09-14T08:00:00.000Z",
+  endsAt: "2026-09-14T10:00:00.000Z",
+};
+
+const activeReservation = {
+  ...confirmedReservation,
+  id: 16,
+  reservationCode: "BKG-ACTIVE999",
+  state: "ACTIVE" as const,
+};
+
 const pendingReservation = {
   ...confirmedReservation,
   id: 13,
@@ -56,100 +105,109 @@ const pendingReservation = {
   confirmedAt: null,
 };
 
-const cancelledReservation = {
+const completedReservation = {
   ...confirmedReservation,
-  id: 14,
-  reservationCode: "BKG-CANCELLED",
-  state: "CANCELLED" as const,
-  cancelledAt: "2026-09-01T10:10:00.000Z",
-  updatedAt: "2026-09-01T10:10:00.000Z",
+  id: 17,
+  reservationCode: "BKG-DONE555",
+  state: "COMPLETED" as const,
 };
 
-const activeSession: ParkingSession = {
-  id: 501,
-  reservationId: 12,
-  facilityId: 4,
-  slotId: 9,
-  userId: 7,
-  entryAt: "2026-09-10T08:00:00.000Z",
-  exitAt: null,
-  status: "ACTIVE",
-  createdAt: "2026-09-10T08:00:00.000Z",
-  updatedAt: "2026-09-10T08:10:00.000Z",
-};
-
-const completedSession: ParkingSession = {
-  ...activeSession,
-  status: "COMPLETED",
-  exitAt: "2026-09-10T10:00:00.000Z",
-};
-
-function sessionResponse(session: ParkingSession): Response {
-  return new Response(JSON.stringify({ session }), { status: 200 });
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
 }
 
-function entryResponse(session: ParkingSession, entryToken: string): Response {
-  return new Response(JSON.stringify({ session, entryToken }), { status: 200 });
+type Handler = (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>;
+
+function routeFetch(handlers: Array<[string, Handler]> = []) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    for (const [fragment, handler] of handlers) {
+      if (url.includes(fragment)) return handler(input, init);
+    }
+    return json({ error: { message: "Not found" } }, 404);
+  });
 }
 
-function apiError(status: number, code: string, message: string): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), { status });
+function urls(mock: ReturnType<typeof routeFetch>): string[] {
+  return mock.mock.calls.map(([input]) => String(input));
 }
 
 let container: HTMLDivElement;
 let root: Root;
 
-async function renderAuthenticatedApp() {
-  setMemorySession(session);
-  await act(async () => {
-    root.render(<App />);
-  });
-}
-
-async function openReservations() {
-  await act(async () => {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav button")).find(
-      (candidate) => candidate.textContent?.includes("My Reservations"),
-    );
-    if (!button) throw new Error("My Reservations button not found");
-    button.click();
-  });
-}
-
-async function clickButton(label: string) {
-  await act(async () => {
-    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent?.includes(label),
-    );
-    if (!button) throw new Error(`Button not found: ${label}`);
-    button.click();
-  });
-}
-
-async function settleAsyncWork() {
+async function settle() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
-async function renderDetailFor(items: unknown[]) {
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(new Response(JSON.stringify(user), { status: 200 }))
-    .mockResolvedValueOnce(new Response(JSON.stringify({ reservations: items }), { status: 200 }))
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ reservation: items[0] }), { status: 200 }),
-    );
-  await renderAuthenticatedApp();
-  await openReservations();
-  await settleAsyncWork();
-  await clickButton("View Details");
-  await settleAsyncWork();
+function buttonWithText(text: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((entry) =>
+    entry.textContent?.includes(text),
+  );
+  if (!button) throw new Error(`No button with text "${text}"`);
+  return button;
+}
+
+async function renderPass(options: {
+  accessToken?: string;
+  focusCode?: string;
+  reservations?: unknown[];
+  handlers?: Array<[string, Handler]>;
+  onSignIn?: () => void;
+  onFind?: () => void;
+}) {
+  const reservations = options.reservations ?? [confirmedReservation];
+  const fetchMock = routeFetch([
+    ["/reservations", () => json({ reservations })],
+    ...(options.handlers ?? []),
+    ["/parking-sessions/by-reservation", () => json({ verificationToken: "TOK-NOT-REACHED" })],
+  ]);
+  await act(async () =>
+    root.render(
+      <PassScreen
+        accessToken={options.accessToken ?? "access-token"}
+        facilities={[facility]}
+        focusCode={options.focusCode}
+        onSignIn={options.onSignIn ?? vi.fn()}
+        onFind={options.onFind ?? vi.fn()}
+      />,
+    ),
+  );
+  await settle();
   return fetchMock;
+}
+
+async function renderApp() {
+  await act(async () => root.render(<App />));
+  await settle();
+}
+
+async function clickNav(label: string) {
+  await act(async () => {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+      (entry) => entry.textContent?.includes(label),
+    );
+    if (!button) throw new Error(`Nav item not found: ${label}`);
+    button.click();
+  });
+  await settle();
+}
+
+async function clickButton(label: string) {
+  await act(async () => {
+    const button = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (entry) => entry.textContent?.includes(label),
+    );
+    if (!button) throw new Error(`Button not found: ${label}`);
+    button.click();
+  });
+  await settle();
 }
 
 beforeEach(() => {
   clearMemorySession();
+  qrcodeMock.reset();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -162,219 +220,286 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("driver parking sessions", () => {
-  it("shows the parking panel only for a confirmed reservation", async () => {
-    await renderDetailFor([confirmedReservation]);
-    expect(container.querySelector(".parking-session-panel")).toBeTruthy();
-    expect(container.textContent).toContain("Parking session");
-    expect(container.textContent).toContain("Enter parking");
+describe("PassScreen", () => {
+  it("asks guests to sign in and calls onSignIn", async () => {
+    const onSignIn = vi.fn();
+    routeFetch();
+    await renderPass({ accessToken: "", onSignIn });
+    expect(container.textContent).toContain("Sign in to access your digital parking pass.");
+    await clickButton("Sign in");
+    expect(onSignIn).toHaveBeenCalledTimes(1);
   });
 
-  it("hides the parking panel for pending and cancelled reservations", async () => {
-    await renderDetailFor([pendingReservation]);
-    expect(container.querySelector(".parking-session-panel")).toBeNull();
-    expect(container.textContent).not.toContain("Enter parking");
-  });
-
-  it("hides the parking panel after a reservation is cancelled", async () => {
-    await renderDetailFor([cancelledReservation]);
-    expect(container.querySelector(".parking-session-panel")).toBeNull();
-    expect(container.textContent).not.toContain("Enter parking");
-  });
-
-  it("requires an authenticated session to reach the reservations area", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-    await act(async () => root.render(<App />));
-    expect(container.textContent).not.toContain("My Reservations");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("enters a vehicle and returns a one-time entry token", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock.mockResolvedValueOnce(entryResponse(activeSession, "GATE-TOKEN-1"));
-    await clickButton("Enter parking");
-    await settleAsyncWork();
-    expect(fetchMock.mock.calls[3]![0]).toContain("/parking-sessions/entry");
-    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
-      method: "POST",
-      body: JSON.stringify({ reservationCode: "BKG-ABC123" }),
+  it("loads only passable reservations and renders the pass details", async () => {
+    await renderPass({
+      reservations: [
+        pendingReservation,
+        confirmedReservation,
+        completedReservation,
+        activeReservation,
+      ],
     });
+    expect(container.textContent).toContain("Shivaji Nagar Public Parking");
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(container.textContent).toContain("#9");
+    expect(container.textContent).toContain("Paid");
+    expect(container.textContent).toContain("₹200");
+    expect(container.textContent).not.toContain("BKG-PENDING987");
+    expect(container.textContent).not.toContain("BKG-DONE555");
+    expect(container.querySelectorAll(".chip").length).toBe(2);
+  });
+
+  it("shows a loading notice then an empty state with a Find parking action", async () => {
+    let resolveList!: (value: Response) => void;
+    const onFind = vi.fn();
+    routeFetch([
+      [
+        "/reservations",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveList = resolve;
+          }),
+      ],
+    ]);
+    await act(async () =>
+      root.render(
+        <PassScreen
+          accessToken="access-token"
+          facilities={[facility]}
+          onSignIn={vi.fn()}
+          onFind={onFind}
+        />,
+      ),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain("Loading your passes...");
+
+    await act(async () => resolveList(json({ reservations: [] })));
+    await settle();
+    expect(container.textContent).not.toContain("Loading your passes...");
     expect(container.textContent).toContain(
-      "Vehicle entered. Copy the one-time token for the entry gate.",
+      "You have no active passes yet. Book a parking spot to get your digital pass.",
     );
-    expect(container.textContent).toContain("ACTIVE");
-    expect(container.textContent).toContain("Slot ID");
-    expect(container.textContent).toContain("9");
-    expect(container.querySelector<HTMLElement>(".entry-token-code")?.textContent).toBe(
-      "GATE-TOKEN-1",
-    );
-    expect(container.textContent).toContain("Copy entry token");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    await clickButton("Find parking");
+    expect(onFind).toHaveBeenCalledTimes(1);
   });
 
-  it("copies the one-time entry token to the clipboard", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
+  it("shows a load error and retries", async () => {
+    let calls = 0;
+    routeFetch([
+      [
+        "/reservations",
+        () =>
+          calls++ === 0
+            ? json({ error: { message: "boom" } }, 503)
+            : json({ reservations: [confirmedReservation] }),
+      ],
+    ]);
+    await act(async () =>
+      root.render(
+        <PassScreen
+          accessToken="access-token"
+          facilities={[facility]}
+          onSignIn={vi.fn()}
+          onFind={vi.fn()}
+        />,
+      ),
+    );
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("boom");
+    await clickButton("Try again");
+    expect(container.textContent).toContain("BKG-ABC123");
+    expect(container.textContent).not.toContain('[role="alert"]');
+  });
+
+  it("maps a 401 to the session-expired message", async () => {
+    routeFetch([["/reservations", () => json({ error: { message: "nope" } }, 401)]]);
+    await act(async () =>
+      root.render(
+        <PassScreen
+          accessToken="access-token"
+          facilities={[facility]}
+          onSignIn={vi.fn()}
+          onFind={vi.fn()}
+        />,
+      ),
+    );
+    await settle();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Your session expired. Please sign in again.",
+    );
+  });
+
+  it("reveals the pass lazily with a Bearer request and renders the token and QR", async () => {
+    const fetchMock = await renderPass({
+      reservations: [confirmedReservation],
+      handlers: [
+        [
+          "/parking-sessions/by-reservation/BKG-ABC123/pass",
+          (_input, init) => {
+            expect(init?.headers).toMatchObject({ Authorization: "Bearer access-token" });
+            return json({ verificationToken: "ppk_gatetoken1" });
+          },
+        ],
+      ],
     });
-    try {
-      const fetchMock = await renderDetailFor([confirmedReservation]);
-      fetchMock.mockResolvedValueOnce(entryResponse(activeSession, "GATE-TOKEN-1"));
-      await clickButton("Enter parking");
-      await settleAsyncWork();
-      await clickButton("Copy entry token");
-      await settleAsyncWork();
-      expect(writeText).toHaveBeenCalledWith("GATE-TOKEN-1");
-      expect(container.textContent).toContain("Copied");
-    } finally {
-      delete (navigator as { clipboard?: unknown }).clipboard;
-    }
+
+    expect(container.querySelector('[aria-label="Parking pass token"]')).toBeNull();
+    expect(container.querySelector(".parking-pass-qr")).toBeNull();
+    await clickButton("Show parking pass");
+
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "ppk_gatetoken1",
+    );
+    const qr = container.querySelector<HTMLImageElement>(".parking-pass-qr");
+    expect(qr?.alt).toBe("Parking pass QR code");
+    expect(qr?.src).toBe(`data:image/png;base64,${btoa("ppk_gatetoken1")}`);
+    expect(container.textContent).toContain("Verified pass");
+    expect(qrcodeMock.calls).toEqual(["ppk_gatetoken1"]);
+    expect(urls(fetchMock).filter((url) => url.includes("/pass")).length).toBe(1);
   });
 
-  it("reveals the parking pass token and refetches it lazily only once", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ verificationToken: "ppk_gatetoken1" }), { status: 200 }),
-    );
-    await clickButton("Show parking pass");
-    await settleAsyncWork();
-    expect(fetchMock.mock.calls[3]![0]).toContain(
-      "/parking-sessions/by-reservation/BKG-ABC123/pass",
-    );
-    expect(fetchMock.mock.calls[3]![1]).toMatchObject({
-      headers: { Authorization: "Bearer access-token" },
+  it("switches between passes and refetches the new code", async () => {
+    const fetchMock = await renderPass({
+      reservations: [confirmedReservation, otherConfirmedReservation],
+      handlers: [
+        [
+          "/parking-sessions/by-reservation/BKG-ABC123/pass",
+          () => json({ verificationToken: "TOK-ONE" }),
+        ],
+        [
+          "/parking-sessions/by-reservation/BKG-OTHER222/pass",
+          () => json({ verificationToken: "TOK-TWO" }),
+        ],
+      ],
     });
-    expect(
-      container.querySelector<HTMLElement>("[aria-label='Parking pass token']")?.textContent,
-    ).toBe("ppk_gatetoken1");
-    expect(container.textContent).toContain("Copy parking pass");
-    expect(container.textContent).toContain("Hide parking pass");
-    expect(container.textContent).not.toContain("Show parking pass");
 
-    await clickButton("Hide parking pass");
-    await settleAsyncWork();
-    expect(container.querySelector("[aria-label='Parking pass token']")).toBeNull();
     await clickButton("Show parking pass");
-    await settleAsyncWork();
-    expect(
-      container.querySelector<HTMLElement>("[aria-label='Parking pass token']")?.textContent,
-    ).toBe("ppk_gatetoken1");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-  });
-
-  it("copies the parking pass token to the clipboard", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-    try {
-      const fetchMock = await renderDetailFor([confirmedReservation]);
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({ verificationToken: "ppk_copy-me" }), { status: 200 }),
-      );
-      await clickButton("Show parking pass");
-      await settleAsyncWork();
-      await clickButton("Copy parking pass");
-      await settleAsyncWork();
-      expect(writeText).toHaveBeenCalledWith("ppk_copy-me");
-      expect(container.textContent).toContain("Copied");
-    } finally {
-      delete (navigator as { clipboard?: unknown }).clipboard;
-    }
-  });
-
-  it("shows a friendly error when the parking pass cannot be issued", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock.mockResolvedValueOnce(apiError(409, "RESERVATION_NOT_ENTRYABLE", "not ready yet"));
-    await clickButton("Show parking pass");
-    await settleAsyncWork();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "This reservation is not ready for entry yet.",
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "TOK-ONE",
     );
+
+    await act(async () => buttonWithText("BKG-OTHER222").click());
+    expect(container.querySelector('[aria-label="Parking pass token"]')).toBeNull();
+    expect(container.textContent).toContain("BKG-OTHER222");
+
+    await clickButton("Show parking pass");
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "TOK-TWO",
+    );
+    const passCalls = urls(fetchMock).filter((url) => url.includes("/by-reservation/"));
+    expect(passCalls).toEqual([
+      `${API_BASE_URL}/parking-sessions/by-reservation/BKG-ABC123/pass`,
+      `${API_BASE_URL}/parking-sessions/by-reservation/BKG-OTHER222/pass`,
+    ]);
+  });
+
+  it("focuses the passed-in reservation code", async () => {
+    const fetchMock = await renderPass({
+      reservations: [confirmedReservation, otherConfirmedReservation],
+      focusCode: "BKG-OTHER222",
+      handlers: [
+        [
+          "/parking-sessions/by-reservation/BKG-OTHER222/pass",
+          () => json({ verificationToken: "TOK-FOCUS" }),
+        ],
+      ],
+    });
+
+    expect(container.querySelector(".chip.selected")?.textContent).toContain("BKG-OTHER222");
+    await clickButton("Show parking pass");
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "TOK-FOCUS",
+    );
+    expect(urls(fetchMock).some((url) => url.includes("/BKG-OTHER222/pass"))).toBe(true);
+  });
+
+  it("shows the server error when the pass cannot be issued", async () => {
+    await renderPass({
+      reservations: [confirmedReservation],
+      handlers: [
+        [
+          "/parking-sessions/by-reservation/BKG-ABC123/pass",
+          () =>
+            json({ error: { code: "RESERVATION_NOT_ENTRYABLE", message: "not ready yet" } }, 409),
+        ],
+      ],
+    });
+    await clickButton("Show parking pass");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("not ready yet");
     expect(container.textContent).toContain("Show parking pass");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
-  it("shows a friendly error when the booking reference is unknown", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock.mockResolvedValueOnce(apiError(404, "BOOKING_NOT_FOUND", "no such reservation"));
-    await clickButton("Enter parking");
-    await settleAsyncWork();
+  it("never renders a rendered QR before the reveal or a malformed response", async () => {
+    const fetchMock = await renderPass({
+      reservations: [confirmedReservation],
+      handlers: [
+        ["/parking-sessions/by-reservation/BKG-ABC123/pass", () => json({ notExpected: true })],
+      ],
+    });
+    expect(container.querySelector(".parking-pass-qr")).toBeNull();
+    await clickButton("Show parking pass");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "No reservation matches this booking reference.",
+      "The parking pass response was incomplete or malformed.",
     );
-    expect(container.textContent).toContain("Enter parking");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(container.querySelector(".parking-pass-qr")).toBeNull();
+    expect(urls(fetchMock).filter((url) => url.includes("/pass")).length).toBe(1);
+  });
+});
+
+describe("driver parking sessions in the app shell", () => {
+  it("lets an authenticated driver open the Pass tab and reveal the pass", async () => {
+    setMemorySession(session);
+    const fetchMock = routeFetch([
+      ["/auth/me", () => json(user)],
+      ["/parking/facilities", () => json({ facilities: [facility] })],
+      ["/reservations", () => json({ reservations: [confirmedReservation] })],
+      [
+        "/parking-sessions/by-reservation/BKG-ABC123/pass",
+        () => json({ verificationToken: "ppk_appshell" }),
+      ],
+    ]);
+    await renderApp();
+
+    await clickNav("Pass");
+    expect(container.textContent).toContain("Shivaji Nagar Public Parking");
+    await clickButton("Show parking pass");
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "ppk_appshell",
+    );
+    expect(urls(fetchMock).some((url) => url.includes("/by-reservation/BKG-ABC123/pass"))).toBe(
+      true,
+    );
   });
 
-  it("recovers an already-active session without issuing a new token", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock
-      .mockResolvedValueOnce(apiError(409, "SESSION_ALREADY_ACTIVE", "active"))
-      .mockResolvedValueOnce(sessionResponse(activeSession));
-    await clickButton("Enter parking");
-    await settleAsyncWork();
-    expect(fetchMock.mock.calls[4]![0]).toContain("/parking-sessions/by-reservation/BKG-ABC123");
-    expect(container.textContent).toContain(
-      "This reservation already has an active parking session.",
-    );
-    expect(container.textContent).toContain("ACTIVE");
-    expect(container.textContent).toContain("Exit vehicle");
-    expect(container.querySelectorAll(".entry-token-code").length).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-  });
+  it("opens the pass focused on the booking the driver chooses from Bookings", async () => {
+    setMemorySession(session);
+    const fetchMock = routeFetch([
+      ["/auth/me", () => json(user)],
+      ["/parking/facilities", () => json({ facilities: [facility] })],
+      [
+        "/reservations",
+        () => json({ reservations: [confirmedReservation, otherConfirmedReservation] }),
+      ],
+      [
+        "/parking-sessions/by-reservation/BKG-ABC123/pass",
+        () => json({ verificationToken: "TOK-VIEW" }),
+      ],
+    ]);
+    await renderApp();
 
-  it("exits the vehicle and marks the session complete", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock
-      .mockResolvedValueOnce(entryResponse(activeSession, "GATE-TOKEN-1"))
-      .mockResolvedValueOnce(sessionResponse(completedSession));
-    await clickButton("Enter parking");
-    await settleAsyncWork();
-    await clickButton("Exit vehicle");
-    await settleAsyncWork();
-    expect(fetchMock.mock.calls[4]![0]).toContain("/parking-sessions/501/exit");
-    expect(fetchMock.mock.calls[4]![1]).toMatchObject({ method: "POST" });
-    expect(container.textContent).toContain("Vehicle exited; the slot was released.");
-    expect(container.textContent).toContain("COMPLETED");
-    expect(container.textContent).toContain("Enter parking");
-    expect(fetchMock).toHaveBeenCalledTimes(5);
-  });
+    await clickNav("Bookings");
+    await clickButton("View pass");
+    expect(container.textContent).toContain("Parking pass");
+    expect(container.querySelector(".pass-code")?.textContent).toBe("BKG-ABC123");
 
-  it("keeps the session visible when the exit fails", async () => {
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock
-      .mockResolvedValueOnce(entryResponse(activeSession, "GATE-TOKEN-1"))
-      .mockResolvedValueOnce(apiError(409, "SESSION_NOT_ACTIVE", "already left"));
-    await clickButton("Enter parking");
-    await settleAsyncWork();
-    await clickButton("Exit vehicle");
-    await settleAsyncWork();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "This session is no longer active.",
+    await clickButton("Show parking pass");
+    expect(container.querySelector('[aria-label="Parking pass token"]')?.textContent).toBe(
+      "TOK-VIEW",
     );
-    expect(container.textContent).toContain("ACTIVE");
-    expect(container.textContent).toContain("Exit vehicle");
-  });
-
-  it("shows a pending state and prevents duplicate entry requests", async () => {
-    let resolveEntry!: (response: Response) => void;
-    const fetchMock = await renderDetailFor([confirmedReservation]);
-    fetchMock.mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveEntry = resolve;
-      }),
-    );
-    await clickButton("Enter parking");
-    expect(container.textContent).toContain("Starting your parking session...");
-    expect(container.querySelector(".parking-session-panel button")).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    resolveEntry(entryResponse(activeSession, "GATE-TOKEN-1"));
-    await settleAsyncWork();
-    expect(container.querySelector<HTMLElement>(".entry-token-code")?.textContent).toBe(
-      "GATE-TOKEN-1",
-    );
+    const passCalls = urls(fetchMock).filter((url) => url.includes("/by-reservation/"));
+    expect(passCalls).toEqual([`${API_BASE_URL}/parking-sessions/by-reservation/BKG-ABC123/pass`]);
   });
 });

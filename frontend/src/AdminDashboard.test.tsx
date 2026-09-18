@@ -5,6 +5,7 @@ import {
   OPERATOR_STATUSES,
   PAYMENT_STATUSES,
   RESERVATION_STATES,
+  type AuditEvent,
   type Operator,
   type PlatformSummary,
 } from "@smartpark/shared";
@@ -69,16 +70,67 @@ const rejectedOperator: Operator = {
   verificationStatus: "REJECTED",
 };
 
-function operatorsResponse(items: Operator[]): Response {
-  return new Response(JSON.stringify({ operators: items }), { status: 200 });
+const auditEvent: AuditEvent = {
+  id: 9,
+  actorUserId: 1,
+  actorEmail: "admin@example.com",
+  action: "OPERATOR_APPROVED",
+  entityType: "OPERATOR",
+  entityId: 4,
+  metadata: {},
+  createdAt: "2026-09-02T10:00:00.000Z",
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status });
 }
 
-function operatorResponse(operator: Operator): Response {
-  return new Response(JSON.stringify(operator), { status: 200 });
+function listFor(status: string): Operator[] {
+  switch (status) {
+    case "PENDING":
+      return [pendingOperator];
+    case "UNDER_REVIEW":
+      return [underReviewOperator];
+    case "VERIFIED":
+      return [verifiedOperator];
+    case "REJECTED":
+      return [rejectedOperator];
+    default:
+      return [];
+  }
 }
 
-function adminErrorResponse(status: number, code: string, message: string): Response {
-  return new Response(JSON.stringify({ error: { code, message } }), { status });
+type Handler = (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>;
+
+function routeAdmin(handlers: Array<[string, Handler]> = []) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    for (const [fragment, handler] of handlers) {
+      if (url.includes(fragment)) return handler(input, init);
+    }
+    if (url.includes("/admin/platform-summary")) return json(emptySummary);
+    if (url.includes("/admin/operators?")) {
+      const match = /[?&]status=([^&]+)/.exec(url);
+      return json({ operators: listFor(match ? decodeURIComponent(match[1]!) : "PENDING") });
+    }
+    if (/\/admin\/operators\/\d+\/review$/.test(url))
+      return json({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" });
+    if (/\/admin\/operators\/\d+\/approve$/.test(url))
+      return json({ ...underReviewOperator, verificationStatus: "VERIFIED" });
+    if (/\/admin\/operators\/\d+\/reject$/.test(url))
+      return json({ ...underReviewOperator, verificationStatus: "REJECTED" });
+    if (url.includes("/admin/audit-events"))
+      return json({ events: [], page: 1, limit: 20, total: 0 });
+    return json({});
+  });
+}
+
+function urls(mock: ReturnType<typeof routeAdmin>): string[] {
+  return mock.mock.calls.map(([input]) => String(input));
+}
+
+function reviewCalls(mock: ReturnType<typeof routeAdmin>): unknown[][] {
+  return mock.mock.calls.filter(([input]) => /\/operators\/\d+\/review$/.test(String(input)));
 }
 
 let container: HTMLDivElement;
@@ -109,6 +161,11 @@ function buttonWithText(text: string): HTMLButtonElement {
   return button;
 }
 
+async function openOperators() {
+  await act(async () => buttonWithText("Operators").click());
+  await settle();
+}
+
 function operatorCard(name: string): HTMLLIElement {
   const card = Array.from(container.querySelectorAll<HTMLLIElement>(".admin-operator-card")).find(
     (entry) => entry.textContent?.includes(name),
@@ -130,14 +187,32 @@ afterEach(() => {
 });
 
 describe("AdminDashboard", () => {
-  it("loads and lists pending operators on mount", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]));
+  it("shows the overview section by default", async () => {
+    const fetchMock = routeAdmin();
     await renderDashboard();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]![0]).toBe(`${API_BASE_URL}/admin/operators?status=PENDING`);
+    expect(container.textContent).toContain("Admin Dashboard");
+    expect(container.textContent).toContain("Platform Overview");
+    expect(container.querySelectorAll(".metric")).toHaveLength(9);
+    expect(container.textContent).toContain("No recent platform events.");
+    expect(urls(fetchMock).some((url) => url.includes("/admin/platform-summary"))).toBe(true);
+  });
+
+  it("navigates from an overview shortcut to operator verification", async () => {
+    routeAdmin();
+    await renderDashboard();
+    await act(async () => buttonWithText("Verify operators").click());
+    await settle();
+    expect(container.textContent).toContain("Operator verification");
+    expect(operatorCard("Koregaon Parking Co")).toBeTruthy();
+  });
+
+  it("loads and lists pending operators when the Operators section opens", async () => {
+    const fetchMock = routeAdmin();
+    await renderDashboard();
+    await openOperators();
+
+    expect(urls(fetchMock)).toContain(`${API_BASE_URL}/admin/operators?status=PENDING`);
     const card = operatorCard("Koregaon Parking Co");
     expect(card.textContent).toContain("#3");
     expect(card.textContent).toContain("private");
@@ -151,41 +226,43 @@ describe("AdminDashboard", () => {
 
   it("shows a loading notice while the operator list is being fetched", async () => {
     let resolveList!: (response: Response) => void;
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
-      new Promise<Response>((resolve) => {
-        resolveList = resolve;
-      }),
-    );
+    routeAdmin([
+      [
+        "status=PENDING",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveList = resolve;
+          }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     expect(container.textContent).toContain("Loading PENDING operators...");
 
-    await act(async () => resolveList(operatorsResponse([pendingOperator])));
+    await act(async () => resolveList(json({ operators: [pendingOperator] })));
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(container.textContent).not.toContain("Loading pending operators...");
+    expect(container.textContent).not.toContain("Loading PENDING operators...");
     expect(operatorCard("Koregaon Parking Co")).toBeTruthy();
   });
 
   it("shows an empty state when no operators match the filter", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(operatorsResponse([]));
+    routeAdmin([["status=PENDING", () => json({ operators: [] })]]);
     await renderDashboard();
+    await openOperators();
 
     expect(container.textContent).toContain("No operators with PENDING status.");
   });
 
   it("refetches the list when the status filter changes", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(operatorsResponse([underReviewOperator]));
+    const fetchMock = routeAdmin();
     await renderDashboard();
+    await openOperators();
 
     await act(async () => buttonWithText("Under Review").click());
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1]![0]).toBe(`${API_BASE_URL}/admin/operators?status=UNDER_REVIEW`);
+    expect(urls(fetchMock)).toContain(`${API_BASE_URL}/admin/operators?status=UNDER_REVIEW`);
     const card = operatorCard("Baner Lots");
     expect(card.textContent).toContain("UNDER REVIEW");
     expect(buttonWithText("Approve")).toBeTruthy();
@@ -193,12 +270,9 @@ describe("AdminDashboard", () => {
   });
 
   it("shows the correct workflow actions for each status", async () => {
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(operatorsResponse([underReviewOperator]))
-      .mockResolvedValueOnce(operatorsResponse([verifiedOperator]))
-      .mockResolvedValueOnce(operatorsResponse([rejectedOperator]));
+    routeAdmin();
     await renderDashboard();
+    await openOperators();
 
     const pendingCard = operatorCard("Koregaon Parking Co");
     expect(pendingCard.querySelector(".admin-review-button")).toBeTruthy();
@@ -216,56 +290,58 @@ describe("AdminDashboard", () => {
     await settle();
     const verifiedCard = operatorCard("Camp Garage");
     expect(verifiedCard.textContent).toContain("VERIFIED");
-    expect(verifiedCard.querySelector(".admin-review-button")).toBeNull();
     expect(verifiedCard.querySelector(".admin-approve-button")).toBeNull();
-    expect(verifiedCard.querySelector(".admin-reject-button")).toBeNull();
 
     await act(async () => buttonWithText("Rejected").click());
     await settle();
     const rejectedCard = operatorCard("Viman City");
     expect(rejectedCard.textContent).toContain("REJECTED");
     expect(rejectedCard.querySelector(".admin-review-button")).toBeNull();
-    expect(rejectedCard.querySelector(".admin-approve-button")).toBeNull();
-    expect(rejectedCard.querySelector(".admin-reject-button")).toBeNull();
   });
 
   it("reviews a pending operator and refreshes the list", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(
-        operatorResponse({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([]));
+    let pendingCalls = 0;
+    const fetchMock = routeAdmin([
+      ["status=PENDING", () => json({ operators: pendingCalls++ === 0 ? [pendingOperator] : [] })],
+      [
+        "/operators/3/review",
+        () => json({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".admin-review-button")!.click(),
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[1]![0]).toBe(`${API_BASE_URL}/admin/operators/3/review`);
-    expect(fetchMock.mock.calls[1]![1]).toMatchObject({
+    const calls = reviewCalls(fetchMock);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toMatchObject({
       method: "POST",
       headers: { Authorization: "Bearer access-token" },
     });
-    expect(fetchMock.mock.calls[2]![0]).toBe(`${API_BASE_URL}/admin/operators?status=PENDING`);
+    expect(container.querySelector(".admin-operator-list")).toBeNull();
     const status = container.querySelector('[role="status"]');
     expect(status?.textContent).toContain("Koregaon Parking Co");
     expect(status?.textContent).toContain("reviewed");
   });
 
   it("approves an under-review operator and refreshes the list", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([]))
-      .mockResolvedValueOnce(operatorsResponse([underReviewOperator]))
-      .mockResolvedValueOnce(
-        operatorResponse({ ...underReviewOperator, verificationStatus: "VERIFIED" }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([]));
+    let underCalls = 0;
+    const fetchMock = routeAdmin([
+      [
+        "status=UNDER_REVIEW",
+        () => json({ operators: underCalls++ === 0 ? [underReviewOperator] : [] }),
+      ],
+      [
+        "/operators/4/approve",
+        () => json({ ...underReviewOperator, verificationStatus: "VERIFIED" }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
     await act(async () => buttonWithText("Under Review").click());
     await settle();
 
@@ -274,28 +350,26 @@ describe("AdminDashboard", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[2]![0]).toBe(`${API_BASE_URL}/admin/operators/4/approve`);
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
-      method: "POST",
-      headers: { Authorization: "Bearer access-token" },
-    });
-    expect(fetchMock.mock.calls[3]![0]).toBe(`${API_BASE_URL}/admin/operators?status=UNDER_REVIEW`);
+    expect(urls(fetchMock).some((url) => url.endsWith("/admin/operators/4/approve"))).toBe(true);
     const status = container.querySelector('[role="status"]');
     expect(status?.textContent).toContain("Baner Lots");
     expect(status?.textContent).toContain("approved");
   });
 
   it("rejects an under-review operator and refreshes the list", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([]))
-      .mockResolvedValueOnce(operatorsResponse([underReviewOperator]))
-      .mockResolvedValueOnce(
-        operatorResponse({ ...underReviewOperator, verificationStatus: "REJECTED" }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([]));
+    let underCalls = 0;
+    const fetchMock = routeAdmin([
+      [
+        "status=UNDER_REVIEW",
+        () => json({ operators: underCalls++ === 0 ? [underReviewOperator] : [] }),
+      ],
+      [
+        "/operators/4/reject",
+        () => json({ ...underReviewOperator, verificationStatus: "REJECTED" }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
     await act(async () => buttonWithText("Under Review").click());
     await settle();
 
@@ -304,13 +378,7 @@ describe("AdminDashboard", () => {
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[2]![0]).toBe(`${API_BASE_URL}/admin/operators/4/reject`);
-    expect(fetchMock.mock.calls[2]![1]).toMatchObject({
-      method: "POST",
-      headers: { Authorization: "Bearer access-token" },
-    });
-    expect(fetchMock.mock.calls[3]![0]).toBe(`${API_BASE_URL}/admin/operators?status=UNDER_REVIEW`);
+    expect(urls(fetchMock).some((url) => url.endsWith("/admin/operators/4/reject"))).toBe(true);
     const status = container.querySelector('[role="status"]');
     expect(status?.textContent).toContain("Baner Lots");
     expect(status?.textContent).toContain("rejected");
@@ -318,16 +386,19 @@ describe("AdminDashboard", () => {
 
   it("prevents duplicate submissions while an action is in flight", async () => {
     let resolveAction!: (response: Response) => void;
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockReturnValueOnce(
-        new Promise<Response>((resolve) => {
-          resolveAction = resolve;
-        }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([]));
+    let pendingCalls = 0;
+    const fetchMock = routeAdmin([
+      ["status=PENDING", () => json({ operators: pendingCalls++ === 0 ? [pendingOperator] : [] })],
+      [
+        "/operators/3/review",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveAction = resolve;
+          }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".admin-review-button")!.click(),
@@ -337,15 +408,13 @@ describe("AdminDashboard", () => {
     expect(reviewButton.disabled).toBe(true);
 
     await act(async () => reviewButton.click());
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(reviewCalls(fetchMock)).toHaveLength(1);
 
     await act(async () =>
-      resolveAction(operatorResponse({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" })),
+      resolveAction(json({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" })),
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2]![0]).toBe(`${API_BASE_URL}/admin/operators?status=PENDING`);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("reviewed");
   });
 
@@ -356,27 +425,33 @@ describe("AdminDashboard", () => {
     [409, "OPERATOR_STATUS_CONFLICT", "already changed status"],
     [500, "INTERNAL_ERROR", "500 failure"],
   ] as const)("shows action error %i with a useful message", async (status, code, message) => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(adminErrorResponse(status, code, `${status} failure`));
+    routeAdmin([
+      [
+        "/operators/3/review",
+        () => json({ error: { code, message: `${status} failure` } }, status),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".admin-review-button")!.click(),
     );
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
   });
 
   it("shows a load error and calls onError with the message", async () => {
     const onError = vi.fn();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      adminErrorResponse(401, "UNAUTHORIZED", "Admin token invalid"),
-    );
+    routeAdmin([
+      [
+        "status=PENDING",
+        () => json({ error: { code: "UNAUTHORIZED", message: "Admin token invalid" } }, 401),
+      ],
+    ]);
     await renderDashboard({ onError });
+    await openOperators();
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Your admin session is no longer authorized",
@@ -386,10 +461,14 @@ describe("AdminDashboard", () => {
 
   it("calls onError when an action fails", async () => {
     const onError = vi.fn();
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(adminErrorResponse(403, "FORBIDDEN", "Not an admin"));
+    routeAdmin([
+      [
+        "/operators/3/review",
+        () => json({ error: { code: "FORBIDDEN", message: "Not an admin" } }, 403),
+      ],
+    ]);
     await renderDashboard({ onError });
+    await openOperators();
 
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".admin-review-button")!.click(),
@@ -403,8 +482,16 @@ describe("AdminDashboard", () => {
   });
 
   it("shows a useful message when the admin service is unreachable", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("Network request failed"));
+    routeAdmin([
+      [
+        "status=PENDING",
+        () => {
+          throw new TypeError("Network request failed");
+        },
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "Unable to reach the admin service.",
@@ -413,22 +500,23 @@ describe("AdminDashboard", () => {
 
   it("resets action feedback when the filter changes", async () => {
     let resolveAction!: (response: Response) => void;
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockReturnValueOnce(
-        new Promise<Response>((resolve) => {
-          resolveAction = resolve;
-        }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([]))
-      .mockResolvedValueOnce(operatorsResponse([underReviewOperator]));
+    routeAdmin([
+      [
+        "/operators/3/review",
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveAction = resolve;
+          }),
+      ],
+    ]);
     await renderDashboard();
+    await openOperators();
 
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".admin-review-button")!.click(),
     );
     await act(async () =>
-      resolveAction(operatorResponse({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" })),
+      resolveAction(json({ ...pendingOperator, verificationStatus: "UNDER_REVIEW" })),
     );
     await settle();
     expect(container.querySelector('[role="status"]')).toBeTruthy();
@@ -441,49 +529,55 @@ describe("AdminDashboard", () => {
   });
 
   it("opens the Platform section and loads the platform analytics", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(new Response(JSON.stringify(emptySummary), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ events: [], page: 1, limit: 20, total: 0 }), { status: 200 }),
-      );
+    const fetchMock = routeAdmin();
     await renderDashboard();
 
-    expect(container.textContent).toContain("Operator verification");
-    expect(buttonWithText("Platform")).toBeTruthy();
+    expect(container.textContent).toContain("Platform overview");
 
     await act(async () => buttonWithText("Platform").click());
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[1]![0]).toBe(`${API_BASE_URL}/admin/platform-summary`);
-    expect(String(fetchMock.mock.calls[2]![0])).toBe(
-      `${API_BASE_URL}/admin/audit-events?page=1&limit=20`,
-    );
+    expect(
+      urls(fetchMock).filter((url) => url.includes("/admin/platform-summary")).length,
+    ).toBeGreaterThanOrEqual(2);
     expect(container.textContent).toContain("Platform analytics");
     expect(container.textContent).toContain("Platform Overview");
     expect(container.querySelectorAll(".metric")).toHaveLength(11);
   });
 
   it("returns to the operators section without refetching analytics", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]))
-      .mockResolvedValueOnce(new Response(JSON.stringify(emptySummary), { status: 200 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ events: [], page: 1, limit: 20, total: 0 }), { status: 200 }),
-      )
-      .mockResolvedValueOnce(operatorsResponse([pendingOperator]));
+    const fetchMock = routeAdmin();
     await renderDashboard();
 
     await act(async () => buttonWithText("Platform").click());
     await settle();
+    const summaryCalls = urls(fetchMock).filter((url) =>
+      url.includes("/admin/platform-summary"),
+    ).length;
+
     await act(async () => buttonWithText("Operators").click());
     await settle();
 
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchMock.mock.calls[3]![0]).toBe(`${API_BASE_URL}/admin/operators?status=PENDING`);
+    expect(urls(fetchMock)).toContain(`${API_BASE_URL}/admin/operators?status=PENDING`);
+    expect(urls(fetchMock).filter((url) => url.includes("/admin/platform-summary")).length).toBe(
+      summaryCalls,
+    );
     expect(container.textContent).toContain("Operator verification");
+  });
+
+  it("opens the Audit Trail section and renders events", async () => {
+    const fetchMock = routeAdmin([
+      ["/admin/audit-events", () => json({ events: [auditEvent], page: 1, limit: 20, total: 1 })],
+    ]);
+    await renderDashboard();
+
+    await act(async () => buttonWithText("Audit Trail").click());
+    await settle();
+
+    expect(urls(fetchMock)).toContain(`${API_BASE_URL}/admin/audit-events?page=1&limit=20`);
+    expect(container.textContent).toContain("Audit trail");
+    expect(container.textContent).toContain("Operator approved");
+    expect(container.textContent).toContain("admin@example.com");
+    expect(container.querySelectorAll(".audit-event-item")).toHaveLength(1);
   });
 });

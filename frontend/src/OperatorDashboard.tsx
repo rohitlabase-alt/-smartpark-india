@@ -6,9 +6,11 @@ import {
   type CreateSlotRequest,
   type FacilityType,
   type Operator,
+  type OperatorOccupancyReport,
   type OperatorStatus,
   type ParkingFacility,
   type ParkingSession,
+  type ParkingSessionEntryRequest,
   type ParkingSessionEntryResponse,
   type ParkingSlot,
   type ParkingSlotStatus,
@@ -23,6 +25,7 @@ import {
   getOperatorFacilities,
   getOperatorFacilitySlots,
   getOperatorMe,
+  getOperatorOccupancyReport,
   getOperatorReservations,
   getOperatorSessions,
   updateOperatorFacility,
@@ -32,6 +35,25 @@ import { cancelParkingSession, enterParking, exitParking } from "./api/sessions"
 import { AuthApiError } from "./api/auth";
 
 type LoadState = "loading" | "success" | "error";
+
+interface CameraScannerLike {
+  stop(): Promise<void>;
+  clear(): void;
+}
+
+async function disposeScanner(scanner: CameraScannerLike | undefined): Promise<void> {
+  if (!scanner) return;
+  try {
+    await scanner.stop();
+  } catch {
+    // Scanning was never started (or was already stopped).
+  }
+  try {
+    scanner.clear();
+  } catch {
+    // The scanner container was already removed.
+  }
+}
 
 function operatorVerificationMessage(status: OperatorStatus | undefined): string {
   if (status === "PENDING") return "Your operator account is waiting for admin verification.";
@@ -216,6 +238,13 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [entryResult, setEntryResult] = useState<ParkingSessionEntryResponse>();
   const entryRequestId = useRef(0);
   const [copiedEntryToken, setCopiedEntryToken] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanStarting, setScanStarting] = useState(false);
+  const [scanActive, setScanActive] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const scannerRef = useRef<CameraScannerLike>();
+  const scanRequestId = useRef(0);
+  const scanHandledRef = useRef(false);
   const [exitConfirmingId, setExitConfirmingId] = useState<number>();
   const [exitingSessionId, setExitingSessionId] = useState<number>();
   const [exitError, setExitError] = useState("");
@@ -227,6 +256,10 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [cancelSessionError, setCancelSessionError] = useState("");
   const [cancelSessionSuccess, setCancelSessionSuccess] = useState("");
   const cancelSessionRequestId = useRef(0);
+  const [occupancyReport, setOccupancyReport] = useState<OperatorOccupancyReport>();
+  const [occupancyLoading, setOccupancyLoading] = useState(false);
+  const [occupancyError, setOccupancyError] = useState("");
+  const occupancyRequestId = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -286,6 +319,10 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setCancelSessionError("");
     setCancelSessionSuccess("");
     cancelSessionRequestId.current += 1;
+    setOccupancyReport(undefined);
+    setOccupancyLoading(false);
+    setOccupancyError("");
+    occupancyRequestId.current += 1;
 
     void getOperatorMe(accessToken).then(
       (result) => {
@@ -374,6 +411,14 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       active = false;
     };
   }, [accessToken, selectedFacilityId]);
+
+  useEffect(() => {
+    return () => {
+      const scanner = scannerRef.current;
+      scannerRef.current = undefined;
+      void disposeScanner(scanner);
+    };
+  }, []);
 
   const selectedFacility = facilities.find((facility) => facility.id === selectedFacilityId);
 
@@ -580,6 +625,32 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     );
   }
 
+  async function performEntry(credential: ParkingSessionEntryRequest): Promise<void> {
+    if (entrySubmitting) return;
+    setEntryError("");
+    setEntrySuccess("");
+    setEntryResult(undefined);
+    setCopiedEntryToken(false);
+    const requestId = ++entryRequestId.current;
+    setEntrySubmitting(true);
+    try {
+      const result = await enterParking(accessToken, credential);
+      if (requestId !== entryRequestId.current) return;
+      setEntryResult(result);
+      setEntrySuccess(
+        "verificationToken" in credential
+          ? "Parking pass verified: the session is now active."
+          : `${credential.reservationCode} entered: the session is now active.`,
+      );
+      void refreshOperatorSessions(requestId);
+    } catch (cause) {
+      if (requestId !== entryRequestId.current) return;
+      setEntryError(parkingSessionErrorMessage(cause, operator?.verificationStatus));
+    } finally {
+      if (requestId === entryRequestId.current) setEntrySubmitting(false);
+    }
+  }
+
   async function handleOperatorEntry(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     if (entrySubmitting) return;
@@ -601,29 +672,79 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setEntryError("Parking-pass token must be 4096 characters or fewer.");
       return;
     }
-    setEntryError("");
-    setEntrySuccess("");
-    setEntryResult(undefined);
-    setCopiedEntryToken(false);
-    const requestId = ++entryRequestId.current;
-    const credential = reference ? { reservationCode: reference } : { verificationToken: token };
-    setEntrySubmitting(true);
+    await performEntry(reference ? { reservationCode: reference } : { verificationToken: token });
+  }
+
+  async function handleStartScan(): Promise<void> {
+    if (scanOpen) return;
+    const requestId = ++scanRequestId.current;
+    scanHandledRef.current = false;
+    setScanError("");
+    setScanOpen(true);
+    setScanStarting(true);
     try {
-      const result = await enterParking(accessToken, credential);
-      if (requestId !== entryRequestId.current) return;
-      setEntryResult(result);
-      setEntrySuccess(
-        reference
-          ? `${reference} entered: the session is now active.`
-          : "Parking pass verified: the session is now active.",
+      const { Html5Qrcode } = await import("html5-qrcode");
+      if (requestId !== scanRequestId.current) return;
+      const scanner = new Html5Qrcode("operator-entry-scanner");
+      scannerRef.current = scanner;
+      await scanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        (decodedText) => void handleScannedToken(decodedText),
+        () => {
+          // Per-frame misses are expected while no code is framed.
+        },
       );
-      void refreshOperatorSessions(requestId);
+      if (requestId !== scanRequestId.current) {
+        const staleScanner = scannerRef.current;
+        scannerRef.current = undefined;
+        await disposeScanner(staleScanner);
+        return;
+      }
+      setScanStarting(false);
+      setScanActive(true);
     } catch (cause) {
-      if (requestId !== entryRequestId.current) return;
-      setEntryError(parkingSessionErrorMessage(cause, operator?.verificationStatus));
-    } finally {
-      if (requestId === entryRequestId.current) setEntrySubmitting(false);
+      if (requestId !== scanRequestId.current) return;
+      const failedScanner = scannerRef.current;
+      scannerRef.current = undefined;
+      await disposeScanner(failedScanner);
+      setScanStarting(false);
+      setScanActive(false);
+      setScanOpen(false);
+      setScanError(cause instanceof Error ? cause.message : "Unable to start the QR scanner.");
     }
+  }
+
+  async function handleStopScan(): Promise<void> {
+    scanRequestId.current += 1;
+    const scanner = scannerRef.current;
+    scannerRef.current = undefined;
+    setScanActive(false);
+    setScanStarting(false);
+    setScanOpen(false);
+    setScanError("");
+    await disposeScanner(scanner);
+  }
+
+  async function handleScannedToken(rawValue: string): Promise<void> {
+    if (scanHandledRef.current) return;
+    scanHandledRef.current = true;
+    const token = rawValue.trim();
+    if (!token) return;
+    const scanner = scannerRef.current;
+    scannerRef.current = undefined;
+    setScanActive(false);
+    setScanStarting(false);
+    setScanOpen(false);
+    await disposeScanner(scanner);
+    if (token.length > 4096) {
+      setScanError("The scanned parking-pass token is too long to verify.");
+      return;
+    }
+    setScanError("");
+    setEntryToken(token);
+    setEntryReference("");
+    await performEntry({ verificationToken: token });
   }
 
   function copyEntranceToken(token: string): void {
@@ -740,6 +861,30 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     } finally {
       if (requestId === cancelSessionRequestId.current) setCancellingSessionId(undefined);
     }
+  }
+
+  /** Lazy one-shot load; a second click only re-fetches after the first resolves. */
+  function handleLoadOccupancyReport(): void {
+    const requestId = ++occupancyRequestId.current;
+    setOccupancyLoading(true);
+    setOccupancyError("");
+    void getOperatorOccupancyReport(accessToken).then(
+      (result) => {
+        if (requestId !== occupancyRequestId.current) return;
+        setOccupancyReport(result);
+        setOccupancyLoading(false);
+      },
+      (cause: unknown) => {
+        if (requestId !== occupancyRequestId.current) return;
+        setOccupancyLoading(false);
+        setOccupancyError(operatorError(cause, operatorVerificationRef.current));
+      },
+    );
+  }
+
+  function occupancyPeriodLabel(value: string | null): string {
+    if (value === null) return "—";
+    return formatTimestamp(value);
   }
 
   async function handleCreateSlot(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -1367,6 +1512,39 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
               setEntrySuccess("");
             }}
           />
+          <div className="operator-scan">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void handleStartScan()}
+              disabled={scanOpen}
+              aria-label="Scan a parking pass QR code"
+            >
+              {scanActive ? "Scanning for a parking pass…" : "Scan QR code"}
+            </button>
+            {scanOpen && (
+              <div className="operator-scanner" role="region" aria-label="Parking pass QR scanner">
+                <div id="operator-entry-scanner" />
+                {scanStarting && (
+                  <p className="notice" aria-live="polite">
+                    Requesting camera access…
+                  </p>
+                )}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void handleStopScan()}
+                >
+                  Cancel scanning
+                </button>
+              </div>
+            )}
+            {scanError && (
+              <p className="notice error" role="alert">
+                {scanError}
+              </p>
+            )}
+          </div>
           {entryError && (
             <p className="notice error" role="alert">
               {entryError}
@@ -1565,6 +1743,87 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                 </li>
               ))}
           </ul>
+        )}
+      </section>
+
+      <section className="operator-panel slots-panel" aria-labelledby="operator-occupancy-title">
+        <div className="section-heading compact-heading">
+          <div>
+            <p className="section-kicker">Reporting</p>
+            <h3 id="operator-occupancy-title">Occupancy reports</h3>
+          </div>
+          {occupancyReport && (
+            <span className="reservation-count">
+              {occupancyReport.occupiedSlots} of {occupancyReport.totalSlots} slots occupied
+            </span>
+          )}
+        </div>
+        {occupancyReport === undefined && !occupancyLoading && (
+          <>
+            <p className="empty-state">
+              Live occupancy plus completed and cancelled session totals across your facilities.
+            </p>
+            <button type="button" onClick={handleLoadOccupancyReport}>
+              View occupancy report
+            </button>
+          </>
+        )}
+        {occupancyLoading && (
+          <p className="notice" aria-live="polite">
+            Loading occupancy report...
+          </p>
+        )}
+        {occupancyError && (
+          <p className="notice error" role="alert">
+            {occupancyError}
+          </p>
+        )}
+        {occupancyReport && (
+          <div className="occupancy-report" role="status">
+            <p className="occupancy-period">
+              Reporting period:{" "}
+              <time dateTime={occupancyReport.start ?? undefined}>
+                {occupancyPeriodLabel(occupancyReport.start)}
+              </time>
+              {" – "}
+              <time dateTime={occupancyReport.end ?? undefined}>
+                {occupancyPeriodLabel(occupancyReport.end)}
+              </time>
+            </p>
+            <dl className="occupancy-stats">
+              <div>
+                <dt>Facilities</dt>
+                <dd>{occupancyReport.totalFacilities}</dd>
+              </div>
+              <div>
+                <dt>Total slots</dt>
+                <dd>{occupancyReport.totalSlots}</dd>
+              </div>
+              <div>
+                <dt>Available slots</dt>
+                <dd>{occupancyReport.availableSlots}</dd>
+              </div>
+              <div>
+                <dt>Occupied slots</dt>
+                <dd>{occupancyReport.occupiedSlots}</dd>
+              </div>
+              <div>
+                <dt>Active sessions</dt>
+                <dd>{occupancyReport.activeSessions}</dd>
+              </div>
+              <div>
+                <dt>Completed in period</dt>
+                <dd>{occupancyReport.completedSessions}</dd>
+              </div>
+              <div>
+                <dt>Cancelled in period</dt>
+                <dd>{occupancyReport.cancelledSessions}</dd>
+              </div>
+            </dl>
+            <button type="button" onClick={handleLoadOccupancyReport} disabled={occupancyLoading}>
+              {occupancyLoading ? "Refreshing..." : "Refresh report"}
+            </button>
+          </div>
         )}
       </section>
 

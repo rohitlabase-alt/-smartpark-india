@@ -13,6 +13,7 @@ import type { AuthenticatedRequest } from "../../http/context.js";
 import { requireAuth, requireRole } from "../../middleware/auth.js";
 import { validateBody } from "../../middleware/validate.js";
 import { operatorsService } from "./operators.service.js";
+import { reportsService } from "./reports.service.js";
 import { facilitiesService } from "../parking/facilities.service.js";
 import { sessionsService } from "../sessions/sessions.service.js";
 
@@ -63,6 +64,19 @@ const cancelReservationSchema = z
   })
   .strict();
 
+/** Optional strict ISO-8601 bound (mirrors the audit module's convention). */
+function parseOptionalIsoDate(raw: unknown, name: string): string | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  if (typeof raw !== "string") {
+    throw badRequest("VALIDATION_ERROR", `${name} must be a valid ISO-8601 timestamp`);
+  }
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw badRequest("VALIDATION_ERROR", `${name} must be a valid ISO-8601 timestamp`);
+  }
+  return date.toISOString();
+}
+
 export const operatorsRouter = Router();
 
 operatorsRouter.post(
@@ -98,6 +112,20 @@ operatorsRouter.get(
   OPERATOR_ROUTES,
   asyncHandler(async (req: AuthenticatedRequest, res) => {
     res.json(await sessionsService.listSessionsForOperator(req.auth.userId));
+  }),
+);
+
+operatorsRouter.get(
+  "/me/reports/occupancy",
+  requireAuth(),
+  OPERATOR_ROUTES,
+  asyncHandler(async (req: AuthenticatedRequest, res) => {
+    const from = parseOptionalIsoDate(req.query.from, "from");
+    const to = parseOptionalIsoDate(req.query.to, "to");
+    if (from !== undefined && to !== undefined && from > to) {
+      throw badRequest("VALIDATION_ERROR", "from must be on or before to");
+    }
+    res.json(await reportsService.getOccupancyReport(req.auth.userId, { from, to }));
   }),
 );
 

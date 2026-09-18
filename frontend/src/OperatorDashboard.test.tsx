@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   Operator,
+  OperatorOccupancyReport,
   ParkingFacility,
   ParkingSession,
   ParkingSlot,
@@ -12,6 +13,45 @@ import type {
 import App from "./App";
 import OperatorDashboard from "./OperatorDashboard";
 import { clearMemorySession, setMemorySession, type AuthSession } from "./api/auth";
+
+type ScannerInstance = {
+  start: ReturnType<typeof vi.fn>;
+  stop: ReturnType<typeof vi.fn>;
+  clear: ReturnType<typeof vi.fn>;
+};
+
+const scannerMock = vi.hoisted(() => {
+  const instances: ScannerInstance[] = [];
+  let startImpl: (() => Promise<null>) | undefined;
+  class Html5Qrcode {
+    start: ScannerInstance["start"];
+    stop: ScannerInstance["stop"];
+    clear: ScannerInstance["clear"];
+    constructor() {
+      this.start = vi.fn(() => {
+        instances.push(this);
+        return startImpl ? startImpl() : Promise.resolve(null);
+      });
+      this.stop = vi.fn(() => Promise.resolve());
+      this.clear = vi.fn();
+    }
+  }
+  return {
+    Html5Qrcode,
+    get instance(): ScannerInstance | undefined {
+      return instances[instances.length - 1];
+    },
+    setStartImpl(impl: (() => Promise<null>) | undefined) {
+      startImpl = impl;
+    },
+    resetScannerMock() {
+      startImpl = undefined;
+      instances.length = 0;
+    },
+  };
+});
+
+vi.mock("html5-qrcode", () => ({ Html5Qrcode: scannerMock.Html5Qrcode }));
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -153,9 +193,16 @@ async function renderDashboard() {
 
 async function renderAppWithUser(user: PublicUser) {
   setMemorySession({ ...session, user });
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(JSON.stringify(user), { status: 200 }),
-  );
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.includes("/parking/facilities")) {
+      return new Response(JSON.stringify({ facilities: [] }), { status: 200 });
+    }
+    if (url.includes("/auth/me")) {
+      return new Response(JSON.stringify(user), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
   await act(async () => root.render(<App />));
   await settle();
 }
@@ -200,6 +247,7 @@ function reservationError(status: number, code: string, message: string): Respon
 
 beforeEach(() => {
   clearMemorySession();
+  scannerMock.resetScannerMock();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -213,35 +261,60 @@ afterEach(() => {
 });
 
 describe("operator dashboard visibility", () => {
-  it("shows navigation only for a server-issued operator role", async () => {
+  function goToProfileTab() {
+    const profileTab = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+      (button) => button.textContent?.includes("Profile"),
+    )!;
+    act(() => profileTab.click());
+  }
+
+  it("shows operator access only for a server-issued operator role", async () => {
     await renderAppWithUser(operatorUser);
+    expect(container.textContent).toContain("Parking near you");
+    expect(container.textContent).not.toContain("Parking Operations");
+    goToProfileTab();
+    expect(container.textContent).toContain("Parking Operations");
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/operators/"))).toBe(
+      false,
+    );
+    await act(async () => {
+      buttonWithText("Parking Operations").click();
+    });
+    await settle();
     expect(container.textContent).toContain("Operator Dashboard");
-    expect(container.textContent).toContain("Check a parking facility");
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
   });
 
-  it("hides navigation and makes no operator request for a normal user", async () => {
+  it("hides operator access and makes no operator request for a normal user", async () => {
     await renderAppWithUser(normalUser);
-    expect(container.textContent).not.toContain("Operator Dashboard");
+    goToProfileTab();
+    expect(container.textContent).not.toContain("Parking Operations");
+    expect(container.textContent).toContain("Register as a parking operator");
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/operators/"))).toBe(
       false,
     );
   });
 
-  it("hides navigation and makes no request while unauthenticated", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
+  it("hides operator access while unauthenticated", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ facilities: [] }), { status: 200 }),
+    );
     await act(async () => root.render(<App />));
-    expect(container.textContent).not.toContain("Operator Dashboard");
-    expect(fetchMock).not.toHaveBeenCalled();
+    await settle();
+    expect(container.textContent).not.toContain("Parking Operations");
+    expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+      expect.stringContaining("/operators/"),
+      expect.anything(),
+    );
   });
 
   it("removes operator access after logout", async () => {
     await renderAppWithUser(operatorUser);
-    const logout = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav button")).find(
-      (button) => button.textContent?.includes("Sign out"),
-    )!;
-    await act(async () => logout.click());
-    expect(container.textContent).not.toContain("Operator Dashboard");
+    goToProfileTab();
+    await act(async () => {
+      buttonWithText("Sign out").click();
+    });
+    await settle();
+    expect(container.textContent).not.toContain("Parking Operations");
   });
 });
 
@@ -1717,6 +1790,153 @@ describe("operator parking operations", () => {
     expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
+  it("does not request the camera until the operator explicitly starts the scanner", async () => {
+    const fetchMock = await renderParkingOps([]);
+    expect(container.querySelector("#operator-entry-scanner")).toBeNull();
+    expect(buttonWithText("Scan QR code")).toBeTruthy();
+    await settle();
+    expect(scannerMock.instance).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    expect(scanner).toBeTruthy();
+    expect(scanner.start).toHaveBeenCalledWith(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(container.querySelector(".operator-scanner")).toBeTruthy();
+  });
+
+  it("enters a vehicle from a scanned QR and cleans up the camera", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: activeSession, entryToken: "ENTRY-999" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(sessionsResponse([activeSession]));
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    const onDecoded = scanner.start.mock.calls[0]![2] as (decodedText: string) => void;
+    await act(async () => onDecoded("  ppk_scanned-token  "));
+    await settle();
+    expect(fetchMock.mock.calls[5]![0]).toContain("/parking-sessions/entry");
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ verificationToken: "ppk_scanned-token" }),
+    });
+    expect(container.textContent).toContain("Parking pass verified: the session is now active.");
+    expect(container.querySelector<HTMLElement>(".entry-token-code")?.textContent).toBe(
+      "ENTRY-999",
+    );
+    expect(container.querySelector("#operator-entry-scanner")).toBeNull();
+    expect(scanner.stop).toHaveBeenCalledTimes(1);
+    expect(scanner.clear).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("ignores a second scanned result while the first is still being handled", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ session: activeSession, entryToken: "ENTRY-999" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(sessionsResponse([activeSession]));
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    const onDecoded = scanner.start.mock.calls[0]![2] as (decodedText: string) => void;
+    await act(async () => {
+      onDecoded("ppk_scanned-token");
+      onDecoded("ppk_second-token");
+    });
+    await settle();
+    const entryCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/parking-sessions/entry"),
+    );
+    expect(entryCalls).toHaveLength(1);
+    expect(fetchMock.mock.calls[5]![1]).toMatchObject({
+      body: JSON.stringify({ verificationToken: "ppk_scanned-token" }),
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("shows the camera startup error in the form's error slot and re-arms the scanner", async () => {
+    const fetchMock = await renderParkingOps([]);
+    scannerMock.setStartImpl(() => Promise.reject(new Error("Camera not available")));
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    expect(container.querySelector(".operator-scan [role='alert']")?.textContent).toContain(
+      "Camera not available",
+    );
+    expect(container.querySelector("#operator-entry-scanner")).toBeNull();
+    expect(buttonWithText("Scan QR code")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("shows the scanner validation error for an oversized scanned token without calling the API", async () => {
+    const fetchMock = await renderParkingOps([]);
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    const onDecoded = scanner.start.mock.calls[0]![2] as (decodedText: string) => void;
+    await act(async () => onDecoded(`ppk_${"x".repeat(4096)}`));
+    await settle();
+    expect(container.querySelector(".operator-scan [role='alert']")?.textContent).toContain(
+      "The scanned parking-pass token is too long to verify.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("maps an API rejection from a scanned token to the existing error vocabulary", async () => {
+    const fetchMock = await renderParkingOps([]);
+    fetchMock.mockResolvedValueOnce(reservationError(409, "TOKEN_EXPIRED", "expired"));
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    const onDecoded = scanner.start.mock.calls[0]![2] as (decodedText: string) => void;
+    await act(async () => onDecoded("ppk_expired-token"));
+    await settle();
+    expect(container.querySelector(".parking-entry-form [role='alert']")?.textContent).toContain(
+      "This parking pass has expired.",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("cancelling the scan closes the region and releases the camera", async () => {
+    const fetchMock = await renderParkingOps([]);
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    await act(async () => buttonWithText("Cancel scanning").click());
+    await settle();
+    expect(scanner.stop).toHaveBeenCalledTimes(1);
+    expect(scanner.clear).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("#operator-entry-scanner")).toBeNull();
+    expect(container.querySelector(".operator-scanner")).toBeNull();
+    expect(buttonWithText("Scan QR code")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("releases the camera when the operator dashboard unmounts mid-scan", async () => {
+    await renderParkingOps([]);
+    await act(async () => buttonWithText("Scan QR code").click());
+    await settle();
+    const scanner = scannerMock.instance!;
+    await act(async () => root.unmount());
+    await settle();
+    expect(scanner.stop).toHaveBeenCalledTimes(1);
+    expect(scanner.clear).toHaveBeenCalledTimes(1);
+  });
+
   it("clears the booking reference when a parking-pass token is typed", async () => {
     await renderParkingOps([]);
     setField("operator-entry-reference", "BKG-ENTRY1");
@@ -1938,6 +2158,100 @@ describe("operator parking operations", () => {
       expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/sessions");
       expect(container.textContent).toContain("0 active");
       expect(fetchMock).toHaveBeenCalledTimes(7);
+    });
+  });
+
+  describe("occupancy reporting", () => {
+    function occupancyResponse(combinedReport: Partial<OperatorOccupancyReport> = {}): Response {
+      return new Response(
+        JSON.stringify({
+          start: null,
+          end: null,
+          totalFacilities: 1,
+          totalSlots: 3,
+          availableSlots: 2,
+          occupiedSlots: 1,
+          activeSessions: 1,
+          completedSessions: 2,
+          cancelledSessions: 1,
+          ...combinedReport,
+        }),
+        { status: 200 },
+      );
+    }
+
+    it("shows the report section without fetching it on mount", async () => {
+      const fetchMock = await renderParkingOps([]);
+      expect(container.textContent).toContain("Occupancy reports");
+      expect(buttonWithText("View occupancy report")).toBeTruthy();
+      await settle();
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      const reportCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/operators/me/reports/occupancy"),
+      );
+      expect(reportCalls).toHaveLength(0);
+    });
+
+    it("loads and renders the report after clicking the button", async () => {
+      const fetchMock = await renderParkingOps([]);
+      fetchMock.mockResolvedValueOnce(occupancyResponse());
+      await act(async () => buttonWithText("View occupancy report").click());
+      await settle();
+
+      expect(fetchMock.mock.calls[5]![0]).toContain("/operators/me/reports/occupancy");
+      expect(container.textContent).toContain("1 of 3 slots occupied");
+      expect(container.textContent).toContain("Reporting period:");
+      const stats = container.querySelector<HTMLDListElement>(".occupancy-stats")!;
+      expect(stats).toBeTruthy();
+      expect(stats.querySelectorAll(".occupancy-stats > div")).toHaveLength(7);
+      expect(stats.textContent).toContain("Facilities");
+      expect(stats.textContent).toContain("Total slots");
+      expect(stats.textContent).toContain("Available slots");
+      expect(stats.textContent).toContain("Occupied slots");
+      expect(stats.textContent).toContain("Active sessions");
+      expect(stats.textContent).toContain("Completed in period");
+      expect(stats.textContent).toContain("Cancelled in period");
+      expect(stats.textContent).toContain("3");
+      expect(stats.textContent).toContain("2");
+      expect(container.querySelectorAll(".occupancy-report time")).toHaveLength(2);
+      expect(buttonWithText("Refresh report")).toBeTruthy();
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("re-fetches when the report is refreshed", async () => {
+      const fetchMock = await renderParkingOps([]);
+      fetchMock.mockResolvedValueOnce(occupancyResponse());
+      await act(async () => buttonWithText("View occupancy report").click());
+      await settle();
+      fetchMock.mockResolvedValueOnce(
+        occupancyResponse({ occupiedSlots: 2, availableSlots: 1, activeSessions: 2 }),
+      );
+      await act(async () => buttonWithText("Refresh report").click());
+      await settle();
+
+      expect(fetchMock.mock.calls[6]![0]).toContain("/operators/me/reports/occupancy");
+      expect(container.textContent).toContain("2 of 3 slots occupied");
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+    });
+
+    it("maps an unverified operator error to the verification message", async () => {
+      const pendingOperator: Operator = {
+        ...operator,
+        verificationStatus: "PENDING" as Operator["verificationStatus"],
+      };
+      const fetchMock = await renderParkingOps([], pendingOperator);
+      fetchMock.mockResolvedValueOnce(
+        reservationError(403, "OPERATOR_NOT_VERIFIED", "not verified"),
+      );
+      await act(async () => buttonWithText("View occupancy report").click());
+      await settle();
+      const section = container.querySelector<HTMLElement>(
+        '[aria-labelledby="operator-occupancy-title"]',
+      )!;
+      expect(section.querySelector("[role='alert']")?.textContent).toContain(
+        "Your operator account is waiting for admin verification.",
+      );
+      expect(section.querySelector(".occupancy-stats")).toBeNull();
     });
   });
 });

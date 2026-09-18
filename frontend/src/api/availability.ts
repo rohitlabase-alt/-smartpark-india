@@ -55,7 +55,7 @@ function isAvailabilityResponse(value: unknown): value is FacilityAvailabilityRe
 }
 
 export async function fetchFacilityAvailability(
-  facilityId: string,
+  facilityId: number | string,
 ): Promise<FacilityAvailabilityResponse> {
   const response = await fetch(
     `${API_BASE_URL}/parking/${encodeURIComponent(facilityId)}/availability`,

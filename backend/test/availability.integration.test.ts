@@ -15,6 +15,7 @@ import type {
   Operator,
   ParkingFacility,
   ParkingSlot,
+  PublicFacilityListResponse,
 } from "@smartpark/shared";
 import { createApp } from "../src/app.js";
 import { getPool, closeDb } from "../src/db.js";
@@ -608,6 +609,99 @@ describe("Facility verification gating (public availability)", () => {
 
     const res = await jsonGet(`/api/v1/parking/${facility.id}/availability`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe("Public facility list (docs/API_SPEC.md §3.1)", () => {
+  it("is public (no auth) and only exposes VERIFIED + active facilities", async () => {
+    const operator = await registerVerifiedOperatorSession("listx-op");
+    const pending = await createFacility(operator.accessToken); // PENDING
+    const approved = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("listx-admin");
+    await approveFacility(admin.accessToken, approved.id);
+    const rejected = await createFacility(operator.accessToken);
+    const review = await jsonPost(
+      `/api/v1/admin/facilities/${rejected.id}/review`,
+      {},
+      admin.accessToken,
+    );
+    expect(review.status).toBe(200);
+    await jsonPost(`/api/v1/admin/facilities/${rejected.id}/reject`, {}, admin.accessToken);
+
+    const res = await jsonGet("/api/v1/parking/facilities");
+    expect(res.status).toBe(200);
+    const body = res.body as PublicFacilityListResponse;
+    expect(Array.isArray(body.facilities)).toBe(true);
+    const ids = body.facilities.map((f) => f.id);
+    expect(ids).toContain(approved.id);
+    expect(ids).not.toContain(pending.id);
+    expect(ids).not.toContain(rejected.id);
+  });
+
+  it("card includes availability counts, hourlyRate and real availableVehicleTypes", async () => {
+    const operator = await registerVerifiedOperatorSession("listx-card");
+    const facility = await createFacility(operator.accessToken);
+    const admin = await registerAdminSession("listx-card-admin");
+    await approveFacility(admin.accessToken, facility.id);
+
+    await createSlot(operator.accessToken, facility.id, { slotCode: "H01", vehicleType: "car" });
+    const reserved = await createSlot(operator.accessToken, facility.id, {
+      slotCode: "H02",
+      vehicleType: "car",
+    });
+    await createSlot(operator.accessToken, facility.id, { slotCode: "H03", vehicleType: "bike" });
+    await jsonPatch(
+      `${SLOTS_PATH(facility.id)}/${reserved.body.id}`,
+      { status: "RESERVED" },
+      operator.accessToken,
+    );
+    await createSlot(operator.accessToken, facility.id, {
+      slotCode: "H04",
+      vehicleType: "car",
+      reservationsEnabled: false,
+    });
+
+    const res = await jsonGet("/api/v1/parking/facilities");
+    const body = res.body as PublicFacilityListResponse;
+    const card = body.facilities.find((f) => f.id === facility.id);
+    expect(card).toBeDefined();
+    expect(card!.name).toBe(facility.name);
+    expect(card!.city).toBe(facility.city);
+    expect(card!.hourlyRate).toBe(100); // documented default fallback (D-035)
+    expect(card!.totalSlots).toBe(4);
+    expect(card!.availableSlots).toBe(2); // H01 AVAILABLE + H03 AVAILABLE
+    expect(card!.confidence).toBe("HIGH");
+    expect(card!.isLive).toBe(true);
+    expect(card!.availableVehicleTypes).toEqual(["bike", "car"]);
+    expect(Number.isNaN(Date.parse(card!.lastUpdatedAt))).toBe(false);
+  });
+
+  it("reflects a facility-level pricing.hourlyRate when configured", async () => {
+    const operator = await registerVerifiedOperatorSession("listx-price");
+    const facility = await createFacility(operator.accessToken);
+    await getPool().query(
+      `UPDATE parking_facilities SET pricing = $1, verification_status = 'VERIFIED', is_active = TRUE WHERE id = $2`,
+      [JSON.stringify({ hourlyRate: 40 }), facility.id],
+    );
+    await createSlot(operator.accessToken, facility.id, { slotCode: "P01", vehicleType: "car" });
+
+    const res = await jsonGet("/api/v1/parking/facilities");
+    const body = res.body as PublicFacilityListResponse;
+    const card = body.facilities.find((f) => f.id === facility.id);
+    expect(card!.hourlyRate).toBe(40);
+  });
+
+  it("excludes soft-deleted (inactive) facilities", async () => {
+    const operator = await registerVerifiedOperatorSession("listx-inactive");
+    const facility = await createFacility(operator.accessToken);
+    await getPool().query(
+      `UPDATE parking_facilities SET verification_status = 'VERIFIED', is_active = TRUE, deleted_at = now() WHERE id = $1`,
+      [facility.id],
+    );
+
+    const res = await jsonGet("/api/v1/parking/facilities");
+    const body = res.body as PublicFacilityListResponse;
+    expect(body.facilities.some((f) => f.id === facility.id)).toBe(false);
   });
 });
 

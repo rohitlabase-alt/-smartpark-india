@@ -68,11 +68,25 @@ function setInput(id: string, value: string) {
 
 async function renderAppWithUser(user: PublicUser) {
   setMemorySession({ ...session, user });
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(JSON.stringify(user), { status: 200 }),
-  );
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.includes("/parking/facilities")) {
+      return new Response(JSON.stringify({ facilities: [] }), { status: 200 });
+    }
+    if (url.includes("/auth/me")) {
+      return new Response(JSON.stringify(user), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  });
   await act(async () => root.render(<App />));
   await settle();
+}
+
+function goToProfileTab() {
+  const profileTab = Array.from(container.querySelectorAll<HTMLButtonElement>(".nav-item")).find(
+    (button) => button.textContent?.includes("Profile"),
+  )!;
+  act(() => profileTab.click());
 }
 
 beforeEach(() => {
@@ -91,22 +105,29 @@ afterEach(() => {
 
 describe("operator registration access", () => {
   it("does not expose registration to unauthenticated users", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ facilities: [] }), { status: 200 }));
     await act(async () => root.render(<App />));
-    expect(container.textContent).not.toContain("Register as Operator");
-    expect(fetchMock).not.toHaveBeenCalled();
+    await settle();
+    expect(container.textContent).not.toContain("Register as a parking operator");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/operators/register"))).toBe(
+      false,
+    );
   });
 
   it("shows registration to an authenticated normal user", async () => {
     await renderAppWithUser(normalUser);
-    expect(container.textContent).toContain("Register as Operator");
-    expect(container.textContent).not.toContain("Operator Dashboard");
+    goToProfileTab();
+    expect(container.textContent).toContain("Register as a parking operator");
+    expect(container.textContent).not.toContain("Parking Operations");
   });
 
   it("does not show registration to an existing operator", async () => {
     await renderAppWithUser(operatorUser);
-    expect(container.textContent).not.toContain("Register as Operator");
-    expect(container.textContent).toContain("Operator Dashboard");
+    goToProfileTab();
+    expect(container.textContent).not.toContain("Register as a parking operator");
+    expect(container.textContent).toContain("Parking Operations");
   });
 });
 
@@ -125,12 +146,12 @@ describe("operator registration form", () => {
   it("submits the exact fields, shows loading, prevents duplicates, and revalidates the role", async () => {
     let resolveRegistration!: (response: Response) => void;
     const fetchMock = vi.spyOn(globalThis, "fetch");
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(normalUser), { status: 200 }));
     await renderAppWithUser(normalUser);
-    const registerButton = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".nav button"),
-    ).find((button) => button.textContent?.includes("Register as Operator"))!;
-    await act(async () => registerButton.click());
+    goToProfileTab();
+    const entryButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Register as a parking operator"),
+    )!;
+    await act(async () => entryButton.click());
     setInput("operator-name", "New Parking Co");
     setInput("operator-business-type", "private");
     setInput("operator-registration-number", "REG-123");
@@ -142,9 +163,13 @@ describe("operator registration form", () => {
     await act(async () => container.querySelector("form")!.requestSubmit());
     expect(container.textContent).toContain("Registering...");
     await act(async () => container.querySelector("form")!.requestSubmit());
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[1]![0]).toContain("/operators/register");
-    expect(fetchMock.mock.calls[1]![1]).toMatchObject({
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/operators/register")).length,
+    ).toBe(1);
+    const registerCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/operators/register"),
+    )!;
+    expect(registerCall[1]).toMatchObject({
       method: "POST",
       body: JSON.stringify({
         name: "New Parking Co",
@@ -163,7 +188,7 @@ describe("operator registration form", () => {
     expect(container.textContent).toContain("Operator organization created");
     expect(container.textContent).toContain("pending");
     expect(container.textContent).toContain("Operator Dashboard");
-    expect(fetchMock.mock.calls[2]![0]).toContain("/auth/me");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/auth/me"))).toBe(true);
   });
 
   it("shows registration API, authorization, network, and malformed-response errors", async () => {

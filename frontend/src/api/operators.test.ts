@@ -12,6 +12,7 @@ import {
   getOperatorFacilitySlots,
   getOperatorReservations,
   getOperatorSessions,
+  getOperatorOccupancyReport,
   getOperatorMe,
   createOperatorFacility,
   createOperatorSlot,
@@ -603,6 +604,89 @@ describe("operator parking sessions API client", () => {
   it("surfaces session network failures", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
     await expect(getOperatorSessions("access-token")).rejects.toMatchObject({
+      name: "AuthApiError",
+      message: "Unable to reach the operator service.",
+    } satisfies Partial<AuthApiError>);
+  });
+});
+
+describe("operator occupancy report API client", () => {
+  const report = {
+    start: "2026-09-01T00:00:00.000Z",
+    end: "2026-09-16T12:00:00.000Z",
+    totalFacilities: 2,
+    totalSlots: 3,
+    availableSlots: 2,
+    occupiedSlots: 1,
+    activeSessions: 1,
+    completedSessions: 2,
+    cancelledSessions: 1,
+  };
+
+  it("gets the report with the exact endpoint and bearer token", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(report), { status: 200 }));
+    await expect(getOperatorOccupancyReport("access-token")).resolves.toEqual(report);
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/operators/me/reports/occupancy`, {
+      headers: { Accept: "application/json", Authorization: "Bearer access-token" },
+    });
+  });
+
+  it("appends period filters as percent-encoded query parameters", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify(report), { status: 200 }));
+    const from = "2026-09-01T00:00:00.000Z";
+    const to = "2026-09-20T00:00:00.000Z";
+    await expect(getOperatorOccupancyReport("access-token", { from, to })).resolves.toEqual(report);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${API_BASE_URL}/operators/me/reports/occupancy?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      { headers: { Accept: "application/json", Authorization: "Bearer access-token" } },
+    );
+  });
+
+  it("accepts an all-zero report with null bounds", async () => {
+    const empty = {
+      start: null,
+      end: null,
+      totalFacilities: 0,
+      totalSlots: 0,
+      availableSlots: 0,
+      occupiedSlots: 0,
+      activeSessions: 0,
+      completedSessions: 0,
+      cancelledSessions: 0,
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(empty), { status: 200 }),
+    );
+    await expect(getOperatorOccupancyReport("access-token")).resolves.toEqual(empty);
+  });
+
+  it("rejects malformed report responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ start: null, totalSlots: "3" }), { status: 200 }),
+    );
+    await expect(getOperatorOccupancyReport("access-token")).rejects.toThrow(
+      "incomplete or malformed",
+    );
+  });
+
+  it.each([
+    [401, "UNAUTHORIZED"],
+    [403, "FORBIDDEN"],
+  ])("surfaces %i occupancy report responses", async (status, code) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(apiError(status, code));
+    await expect(getOperatorOccupancyReport("access-token")).rejects.toMatchObject({
+      status,
+      code,
+    });
+  });
+
+  it("surfaces occupancy report network failures", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline"));
+    await expect(getOperatorOccupancyReport("access-token")).rejects.toMatchObject({
       name: "AuthApiError",
       message: "Unable to reach the operator service.",
     } satisfies Partial<AuthApiError>);

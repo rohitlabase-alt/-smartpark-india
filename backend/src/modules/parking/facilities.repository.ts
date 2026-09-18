@@ -188,6 +188,21 @@ export const facilitiesRepository = {
   },
 
   /**
+   * Publicly serveable facilities: verified, active, not soft-deleted.
+   * This is the only filter that may be exposed to the public list read.
+   */
+  async listPublic(): Promise<FacilityRow[]> {
+    const { rows } = await getPool().query<FacilityResult>(
+      `SELECT ${SELECT_COLUMNS} FROM parking_facilities
+       WHERE deleted_at IS NULL
+         AND is_active = TRUE
+         AND verification_status = 'VERIFIED'
+       ORDER BY city ASC, name ASC`,
+    );
+    return rows.map(mapFacility);
+  },
+
+  /**
    * Partial update: only non-undefined fields are written; null explicitly
    * clears a nullable column. Never touches identity/ownership/verification.
    */

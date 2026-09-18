@@ -298,6 +298,36 @@ export interface FacilityAvailabilityResponse {
   slots: ParkingSlot[];
 }
 
+/**
+ * Public parking-facility card (docs/API_SPEC.md §3.1). Only VERIFIED, active,
+ * non-deleted facilities are exposed. `availableVehicleTypes` is derived from
+ * real slot data, so the customer vehicle filter never fabricates matches.
+ */
+export interface PublicParkingFacility {
+  id: number;
+  parkingId: string;
+  name: string;
+  description: string | null;
+  type: FacilityType;
+  city: string;
+  state: string | null;
+  area: string | null;
+  address: string | null;
+  capacity: number;
+  hourlyRate: number;
+  availabilityMode: AvailabilityMode;
+  totalSlots: number;
+  availableSlots: number;
+  availableVehicleTypes: string[];
+  isLive: boolean;
+  confidence: AvailabilityConfidence;
+  lastUpdatedAt: string;
+}
+
+export interface PublicFacilityListResponse {
+  facilities: PublicParkingFacility[];
+}
+
 export interface CreateSlotRequest {
   slotCode: string;
   vehicleType?: string;
@@ -470,6 +500,30 @@ export interface ParkingSessionResponse {
 /** Operator-scoped session listing (Phase 9 Block 2, /operators/me/sessions). */
 export interface ParkingSessionListResponse {
   sessions: ParkingSession[];
+}
+
+/**
+ * Operator occupancy report (Phase 9 Block B,
+ * GET /api/v1/operators/me/reports/occupancy). `start`/`end` bound the
+ * reporting period: they echo the optional `from`/`to` query filters where
+ * supplied, otherwise they are the observed bounds (min entry_at / max
+ * exit_at) of the operator's session history — null when no sessions exist.
+ * Slot/facility counts and `activeSessions` are live snapshots at read time;
+ * `completedSessions`/`cancelledSessions` count sessions whose end
+ * (`exit_at`) falls inside the period. All counts are scoped server-side to
+ * the authenticated operator's own facilities — no facility ids are accepted
+ * from the client (docs/SECURITY.md §5, IDOR resistance).
+ */
+export interface OperatorOccupancyReport {
+  start: string | null;
+  end: string | null;
+  totalFacilities: number;
+  totalSlots: number;
+  availableSlots: number;
+  occupiedSlots: number;
+  activeSessions: number;
+  completedSessions: number;
+  cancelledSessions: number;
 }
 
 // ---------------------------------------------------------------------------
