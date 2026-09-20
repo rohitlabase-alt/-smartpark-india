@@ -5,7 +5,7 @@
  */
 import { Router } from "express";
 import { z } from "zod";
-import { PARKING_SLOT_STATUSES } from "@smartpark/shared";
+import { PARKING_SLOT_STATUSES, SLOT_CATEGORIES } from "@smartpark/shared";
 import { asyncHandler } from "../../http/async-handler.js";
 import { notFound } from "../../http/errors.js";
 import type { AuthenticatedRequest } from "../../http/context.js";
@@ -17,6 +17,8 @@ const createSlotSchema = z
   .object({
     slotCode: z.string().trim().min(1).max(40),
     vehicleType: z.string().trim().min(1).max(32).optional(),
+    category: z.enum(SLOT_CATEGORIES).optional(),
+    zoneId: z.number().int().positive().optional(),
     status: z.enum(PARKING_SLOT_STATUSES).optional(),
     reservationsEnabled: z.boolean().optional(),
   })
@@ -25,6 +27,8 @@ const createSlotSchema = z
 const updateSlotSchema = z
   .object({
     vehicleType: z.string().trim().min(1).max(32).optional(),
+    category: z.enum(SLOT_CATEGORIES).optional(),
+    zoneId: z.number().int().positive().nullable().optional(),
     status: z.enum(PARKING_SLOT_STATUSES).optional(),
     reservationsEnabled: z.boolean().optional(),
   })

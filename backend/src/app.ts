@@ -6,6 +6,7 @@ import { operatorsRouter } from "./modules/operators/operators.routes.js";
 import { adminRouter } from "./modules/admin/admin.routes.js";
 import { parkingRouter } from "./modules/availability/availability.routes.js";
 import { buildSlotsRouter } from "./modules/parking/slots.routes.js";
+import { buildZonesRouter } from "./modules/parking/zones.routes.js";
 import { reservationsRouter } from "./modules/bookings/reservations.routes.js";
 import { buildPaymentsRouter } from "./modules/payments/payments.routes.js";
 import { sessionsRouter } from "./modules/sessions/sessions.routes.js";
@@ -104,6 +105,10 @@ export function createApp(options: CreateAppOptions = {}): Express {
   // Operator-owned slot management (Phase 2B): /operators/me/facilities/:id/slots
   const slotsRouter = buildSlotsRouter();
   app.use("/api/v1/operators/me/facilities", slotsRouter);
+
+  // Operator-owned zone management (Phase 10 society): /operators/me/facilities/:id/zones
+  const zonesRouter = buildZonesRouter();
+  app.use("/api/v1/operators/me/facilities", zonesRouter);
 
   // Public parking availability (Phase 2B): /parking/:id/availability
   app.use("/api/v1/parking", parkingRouter);

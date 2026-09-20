@@ -16,6 +16,8 @@ const validResponse = {
       slotCode: "A01",
       facilityId: 1,
       zoneId: null,
+      zoneName: null,
+      category: "STANDARD",
       vehicleType: "car",
       status: "AVAILABLE",
       reservationsEnabled: true,
@@ -23,6 +25,7 @@ const validResponse = {
       updatedAt: "2026-09-01T10:00:00.000Z",
     },
   ],
+  zones: [],
 };
 
 describe("fetchFacilityAvailability", () => {

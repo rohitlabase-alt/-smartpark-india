@@ -75,3 +75,21 @@ export function greetingName(name: string | undefined): string {
   if (!name) return "Guest";
   return name.trim().split(/\s+/)[0] || "Guest";
 }
+
+const FACILITY_TYPE_LABELS: Record<string, string> = {
+  public: "Public",
+  private: "Private",
+  "on-street": "On-street",
+  "off-street": "Off-street",
+  mall: "Mall",
+  airport: "Airport",
+  "railway-metro": "Railway / Metro",
+  hospital: "Hospital",
+  corporate: "Corporate",
+  ev: "EV",
+  society: "Society",
+};
+
+export function facilityTypeLabel(type: string): string {
+  return FACILITY_TYPE_LABELS[type] ?? type;
+}

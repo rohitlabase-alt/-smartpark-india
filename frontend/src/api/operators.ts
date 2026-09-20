@@ -2,18 +2,22 @@ import {
   OPERATOR_STATUSES,
   PARKING_SLOT_STATUSES,
   RESERVATION_STATES,
+  SLOT_CATEGORIES,
   type BookingListResponse,
   type CreateFacilityRequest,
   type CreateSlotRequest,
+  type CreateZoneRequest,
   type Operator,
   type OperatorOccupancyReport,
   type OperatorRegisterRequest,
   type ParkingFacility,
   type ParkingSessionListResponse,
   type ParkingSlot,
+  type ParkingZone,
   type Reservation,
   type UpdateFacilityRequest,
   type UpdateSlotRequest,
+  type UpdateZoneRequest,
 } from "@smartpark/shared";
 import { API_BASE_URL, AuthApiError } from "./auth";
 import { isParkingSession } from "./sessions";
@@ -76,12 +80,30 @@ function isSlot(value: unknown): value is ParkingSlot {
     typeof slot.facilityId === "number" &&
     Number.isFinite(slot.facilityId) &&
     (slot.zoneId === null || typeof slot.zoneId === "number") &&
+    (slot.zoneName === null || typeof slot.zoneName === "string") &&
     typeof slot.vehicleType === "string" &&
+    SLOT_CATEGORIES.includes(slot.category as ParkingSlot["category"]) &&
     typeof slot.status === "string" &&
     PARKING_SLOT_STATUSES.includes(slot.status) &&
     typeof slot.reservationsEnabled === "boolean" &&
     typeof slot.createdAt === "string" &&
     typeof slot.updatedAt === "string"
+  );
+}
+
+function isParkingZone(value: unknown): value is ParkingZone {
+  if (!value || typeof value !== "object") return false;
+  const zone = value as Partial<ParkingZone>;
+  return (
+    typeof zone.id === "number" &&
+    Number.isFinite(zone.id) &&
+    typeof zone.facilityId === "number" &&
+    Number.isFinite(zone.facilityId) &&
+    typeof zone.name === "string" &&
+    typeof zone.kind === "string" &&
+    typeof zone.isActive === "boolean" &&
+    typeof zone.createdAt === "string" &&
+    typeof zone.updatedAt === "string"
   );
 }
 
@@ -170,7 +192,8 @@ async function request(
 
   let body: unknown;
   try {
-    body = await response.json();
+    const text = await response.text();
+    body = text ? JSON.parse(text) : undefined;
   } catch {
     throw new AuthApiError("The operator response was not valid JSON.", response.status);
   }
@@ -272,6 +295,68 @@ export async function updateOperatorSlot(
     throw new AuthApiError("The slot response was incomplete or malformed.");
   }
   return body;
+}
+
+export async function createOperatorZone(
+  accessToken: string,
+  facilityId: number,
+  input: CreateZoneRequest,
+): Promise<ParkingZone> {
+  const body = await request(
+    `/operators/me/facilities/${encodeURIComponent(facilityId)}/zones`,
+    accessToken,
+    { method: "POST", body: JSON.stringify(input) },
+  );
+  if (!isParkingZone(body)) {
+    throw new AuthApiError("The zone response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function getOperatorFacilityZones(
+  accessToken: string,
+  facilityId: number,
+): Promise<ParkingZone[]> {
+  const body = await request(
+    `/operators/me/facilities/${encodeURIComponent(facilityId)}/zones`,
+    accessToken,
+  );
+  if (!Array.isArray(body) || !body.every(isParkingZone)) {
+    throw new AuthApiError("The facility zones response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function updateOperatorZone(
+  accessToken: string,
+  facilityId: number,
+  zoneId: number,
+  input: UpdateZoneRequest,
+): Promise<ParkingZone> {
+  const body = await request(
+    `/operators/me/facilities/${encodeURIComponent(facilityId)}/zones/${encodeURIComponent(zoneId)}`,
+    accessToken,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+  if (!isParkingZone(body)) {
+    throw new AuthApiError("The zone response was incomplete or malformed.");
+  }
+  return body;
+}
+
+export async function deleteOperatorZone(
+  accessToken: string,
+  facilityId: number,
+  zoneId: number,
+): Promise<void> {
+  const body = await request(
+    `/operators/me/facilities/${encodeURIComponent(facilityId)}/zones/${encodeURIComponent(zoneId)}`,
+    accessToken,
+    { method: "DELETE" },
+  );
+  if (body !== undefined) {
+    throw new AuthApiError("The zone delete response was unexpected.");
+  }
 }
 
 export async function getOperatorMe(accessToken: string): Promise<Operator> {

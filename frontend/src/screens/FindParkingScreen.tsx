@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import type { PublicParkingFacility } from "@smartpark/shared";
+import type { FacilityType, PublicParkingFacility } from "@smartpark/shared";
 import { ParkingCard } from "../components/ParkingCard";
 import { usePublicFacilities } from "../hooks/usePublicFacilities";
 import { VEHICLE_FILTER_OPTIONS, facilityMatchesVehicle, type VehicleKey } from "../utils/vehicle";
-import { IconCar, IconBike, IconBolt, IconSearch, IconMapPin } from "../components/icons";
+import { facilityTypeLabel } from "../utils/format";
+import { IconCar, IconBike, IconBolt, IconSearch, IconMapPin, IconHome } from "../components/icons";
 import { AppHeader, SectionHeading, ScreenError, ScreenLoader, EmptyState } from "../components/ui";
 
 interface FindParkingScreenProps {
@@ -14,6 +15,7 @@ export function FindParkingScreen({ onOpenFacility }: FindParkingScreenProps) {
   const { state, facilities, error, refresh } = usePublicFacilities();
   const [query, setQuery] = useState("");
   const [city, setCity] = useState("All");
+  const [typeFilter, setTypeFilter] = useState<FacilityType | "all">("all");
   const [vehicle, setVehicle] = useState<VehicleKey | "all">("all");
 
   const cities = useMemo(
@@ -21,14 +23,24 @@ export function FindParkingScreen({ onOpenFacility }: FindParkingScreenProps) {
     [facilities],
   );
 
+  const availableTypes = useMemo(
+    () => Array.from(new Set(facilities.map((f) => f.type))).sort(),
+    [facilities],
+  );
+
   useEffect(() => {
     if (city !== "All" && !cities.includes(city)) setCity("All");
   }, [cities, city]);
+
+  useEffect(() => {
+    if (typeFilter !== "all" && !availableTypes.includes(typeFilter)) setTypeFilter("all");
+  }, [availableTypes, typeFilter]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return facilities.filter((facility) => {
       if (city !== "All" && facility.city !== city) return false;
+      if (typeFilter !== "all" && facility.type !== typeFilter) return false;
       if (vehicle !== "all" && !facilityMatchesVehicle(facility.availableVehicleTypes, vehicle)) {
         return false;
       }
@@ -41,7 +53,7 @@ export function FindParkingScreen({ onOpenFacility }: FindParkingScreenProps) {
       }
       return true;
     });
-  }, [facilities, query, city, vehicle]);
+  }, [facilities, query, city, typeFilter, vehicle]);
 
   return (
     <div className="sp-main">
@@ -80,6 +92,27 @@ export function FindParkingScreen({ onOpenFacility }: FindParkingScreenProps) {
           >
             <IconMapPin width={15} height={15} />
             {c}
+          </button>
+        ))}
+      </div>
+
+      <div className="chip-row" role="group" aria-label="Facility type filter">
+        <button
+          type="button"
+          className={`chip${typeFilter === "all" ? " selected" : ""}`}
+          onClick={() => setTypeFilter("all")}
+        >
+          All venues
+        </button>
+        {availableTypes.map((type) => (
+          <button
+            key={type}
+            type="button"
+            className={`chip${typeFilter === type ? " selected" : ""}`}
+            onClick={() => setTypeFilter(typeFilter === type ? "all" : type)}
+          >
+            {type === "society" ? <IconHome width={15} height={15} /> : null}
+            {facilityTypeLabel(type)}
           </button>
         ))}
       </div>

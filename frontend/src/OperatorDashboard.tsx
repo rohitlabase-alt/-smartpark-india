@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   FACILITY_TYPES,
   PARKING_SLOT_STATUSES,
+  SLOT_CATEGORIES,
+  SLOT_CATEGORY_LABELS,
   type CreateFacilityRequest,
   type CreateSlotRequest,
   type FacilityType,
@@ -14,7 +16,9 @@ import {
   type ParkingSessionEntryResponse,
   type ParkingSlot,
   type ParkingSlotStatus,
+  type ParkingZone,
   type Reservation,
+  type SlotCategory,
   type UpdateFacilityRequest,
   type UpdateSlotRequest,
 } from "@smartpark/shared";
@@ -22,8 +26,11 @@ import {
   cancelOperatorReservation,
   createOperatorFacility,
   createOperatorSlot,
+  createOperatorZone,
+  deleteOperatorZone,
   getOperatorFacilities,
   getOperatorFacilitySlots,
+  getOperatorFacilityZones,
   getOperatorMe,
   getOperatorOccupancyReport,
   getOperatorReservations,
@@ -169,6 +176,19 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slots, setSlots] = useState<ParkingSlot[]>([]);
   const [slotsState, setSlotsState] = useState<LoadState>("success");
   const [slotsError, setSlotsError] = useState("");
+  const [zones, setZones] = useState<ParkingZone[]>([]);
+  const [zonesState, setZonesState] = useState<LoadState>("success");
+  const [zonesError, setZonesError] = useState("");
+  const [zoneCreateOpen, setZoneCreateOpen] = useState(false);
+  const [zoneName, setZoneName] = useState("");
+  const [zoneKind, setZoneKind] = useState("");
+  const [zoneCreateSubmitting, setZoneCreateSubmitting] = useState(false);
+  const [zoneCreateError, setZoneCreateError] = useState("");
+  const [zoneCreateSuccess, setZoneCreateSuccess] = useState("");
+  const zoneCreateRequestId = useRef(0);
+  const [zoneDeleteSubmitting, setZoneDeleteSubmitting] = useState(false);
+  const [zoneDeleteError, setZoneDeleteError] = useState("");
+  const zoneDeleteRequestId = useRef(0);
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [reservationsState, setReservationsState] = useState<LoadState>("loading");
   const [reservationsError, setReservationsError] = useState("");
@@ -215,6 +235,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slotCreateSuccess, setSlotCreateSuccess] = useState("");
   const [slotCode, setSlotCode] = useState("");
   const [slotVehicleType, setSlotVehicleType] = useState("");
+  const [slotCategory, setSlotCategory] = useState<SlotCategory | "">("");
+  const [slotZone, setSlotZone] = useState<string>("");
   const [slotStatus, setSlotStatus] = useState<ParkingSlotStatus | "">("");
   const [slotReservationsEnabled, setSlotReservationsEnabled] = useState<"" | "true" | "false">("");
   const slotCreateRequestId = useRef(0);
@@ -223,6 +245,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
   const [slotEditError, setSlotEditError] = useState("");
   const [slotEditSuccess, setSlotEditSuccess] = useState("");
   const [slotEditVehicleType, setSlotEditVehicleType] = useState("");
+  const [slotEditCategory, setSlotEditCategory] = useState<SlotCategory | "">("");
+  const [slotEditZone, setSlotEditZone] = useState<string>("");
   const [slotEditStatus, setSlotEditStatus] = useState<ParkingSlotStatus | "">("");
   const [slotEditReservationsEnabled, setSlotEditReservationsEnabled] = useState(false);
   const slotEditRequestId = useRef(0);
@@ -273,6 +297,16 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlots([]);
     setSlotsState("success");
     setSlotsError("");
+    setZones([]);
+    setZonesState("success");
+    setZonesError("");
+    setZoneCreateOpen(false);
+    setZoneCreateSubmitting(false);
+    setZoneCreateError("");
+    setZoneCreateSuccess("");
+    zoneCreateRequestId.current += 1;
+    setZoneDeleteSubmitting(false);
+    setZoneDeleteError("");
     setReservations([]);
     setReservationsState("loading");
     setReservationsError("");
@@ -291,11 +325,18 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlotCreateError("");
     setSlotCreateSuccess("");
     slotCreateRequestId.current += 1;
+    setSlotCode("");
+    setSlotVehicleType("");
+    setSlotCategory("");
+    setSlotZone("");
     setSlotEditId(undefined);
     setSlotEditSubmitting(false);
     setSlotEditError("");
     setSlotEditSuccess("");
     slotEditRequestId.current += 1;
+    setSlotEditVehicleType("");
+    setSlotEditCategory("");
+    setSlotEditZone("");
     setSessions([]);
     setSessionsState("loading");
     setSessionsError("");
@@ -412,6 +453,26 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     };
   }, [accessToken, selectedFacilityId]);
 
+  function handleOpenZonePanel(): void {
+    if (zonesState === "loading" || selectedFacilityId === undefined) return;
+    const facilityId = selectedFacilityId;
+    const requestId = zoneCreateRequestId.current;
+    setZonesState("loading");
+    setZonesError("");
+    void getOperatorFacilityZones(accessToken, facilityId).then(
+      (result) => {
+        if (requestId !== zoneCreateRequestId.current) return;
+        setZones(result);
+        setZonesState("success");
+      },
+      (cause: unknown) => {
+        if (requestId !== zoneCreateRequestId.current) return;
+        setZonesState("error");
+        setZonesError(operatorError(cause, operator?.verificationStatus));
+      },
+    );
+  }
+
   useEffect(() => {
     return () => {
       const scanner = scannerRef.current;
@@ -450,11 +511,18 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlotCreateError("");
     setSlotCreateSuccess("");
     slotCreateRequestId.current += 1;
+    setSlotCode("");
+    setSlotVehicleType("");
+    setSlotCategory("");
+    setSlotZone("");
     setSlotEditId(undefined);
     setSlotEditSubmitting(false);
     setSlotEditError("");
     setSlotEditSuccess("");
     slotEditRequestId.current += 1;
+    setSlotEditVehicleType("");
+    setSlotEditCategory("");
+    setSlotEditZone("");
   }
 
   function handleOpenEdit(facility: ParkingFacility): void {
@@ -507,6 +575,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
     setSlotEditError("");
     setSlotEditSuccess("");
     setSlotEditVehicleType(slot.vehicleType);
+    setSlotEditCategory(slot.category);
+    setSlotEditZone(slot.zoneId === null ? "" : String(slot.zoneId));
     setSlotEditStatus(slot.status);
     setSlotEditReservationsEnabled(slot.reservationsEnabled);
   }
@@ -910,9 +980,20 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setSlotCreateError("Select a valid slot status.");
       return;
     }
+    if (slotCategory && !SLOT_CATEGORIES.includes(slotCategory)) {
+      setSlotCreateError("Select a valid parking type.");
+      return;
+    }
+    const zoneNumber = slotZone ? Number(slotZone) : undefined;
+    if (zoneNumber !== undefined && (!Number.isInteger(zoneNumber) || zoneNumber <= 0)) {
+      setSlotCreateError("Select a valid zone.");
+      return;
+    }
 
     const request: CreateSlotRequest = { slotCode: trimmedSlotCode };
     if (trimmedVehicleType) request.vehicleType = trimmedVehicleType;
+    if (slotCategory) request.category = slotCategory;
+    if (zoneNumber !== undefined) request.zoneId = zoneNumber;
     if (slotStatus) request.status = slotStatus;
     if (slotReservationsEnabled) request.reservationsEnabled = slotReservationsEnabled === "true";
 
@@ -933,6 +1014,8 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       );
       setSlotCode("");
       setSlotVehicleType("");
+      setSlotCategory("");
+      setSlotZone("");
       setSlotStatus("");
       setSlotReservationsEnabled("");
     } catch (cause) {
@@ -961,10 +1044,21 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setSlotEditError("Select a valid slot status.");
       return;
     }
+    if (slotEditCategory && !SLOT_CATEGORIES.includes(slotEditCategory)) {
+      setSlotEditError("Select a valid parking type.");
+      return;
+    }
+    const editZoneNumber = slotEditZone === "" ? null : Number(slotEditZone);
+    if (editZoneNumber !== null && (!Number.isInteger(editZoneNumber) || editZoneNumber <= 0)) {
+      setSlotEditError("Select a valid zone.");
+      return;
+    }
     const facilityId = selectedFacilityId;
     const slotId = slotEditId;
     const request: UpdateSlotRequest = {
       vehicleType,
+      category: slotEditCategory || "STANDARD",
+      zoneId: editZoneNumber,
       status: slotEditStatus as ParkingSlotStatus,
       reservationsEnabled: slotEditReservationsEnabled,
     };
@@ -983,6 +1077,90 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
       setSlotEditError(operatorError(cause, operator?.verificationStatus));
     } finally {
       if (requestId === slotEditRequestId.current) setSlotEditSubmitting(false);
+    }
+  }
+
+  function handleOpenZoneCreate(): void {
+    handleOpenZonePanel();
+    zoneCreateRequestId.current += 1;
+    setZoneCreateOpen(true);
+    setZoneCreateSubmitting(false);
+    setZoneCreateError("");
+    setZoneCreateSuccess("");
+  }
+
+  function handleCloseZoneCreate(): void {
+    zoneCreateRequestId.current += 1;
+    setZoneCreateOpen(false);
+    setZoneCreateSubmitting(false);
+    setZoneCreateError("");
+  }
+
+  async function handleCreateZone(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (zoneCreateSubmitting || selectedFacilityId === undefined) return;
+    setZoneCreateError("");
+    setZoneCreateSuccess("");
+    const name = zoneName.trim();
+    const kind = zoneKind.trim();
+    if (!name) {
+      setZoneCreateError("Enter a zone name.");
+      return;
+    }
+    if (name.length > 80) {
+      setZoneCreateError("Zone name must be 80 characters or fewer.");
+      return;
+    }
+    if (kind.length > 32) {
+      setZoneCreateError("Zone kind must be 32 characters or fewer.");
+      return;
+    }
+    const facilityId = selectedFacilityId;
+    const requestId = ++zoneCreateRequestId.current;
+    setZoneCreateSubmitting(true);
+    try {
+      const created = await createOperatorZone(
+        accessToken,
+        facilityId,
+        kind ? { name, kind } : { name },
+      );
+      if (requestId !== zoneCreateRequestId.current) return;
+      setZones((current) =>
+        current.some((zone) => zone.id === created.id)
+          ? current.map((zone) => (zone.id === created.id ? created : zone))
+          : [...current, created],
+      );
+      setZoneCreateOpen(false);
+      setZoneName("");
+      setZoneKind("");
+      setZoneCreateSuccess(`${created.name} was created.`);
+    } catch (cause) {
+      if (requestId !== zoneCreateRequestId.current) return;
+      setZoneCreateError(operatorError(cause, operator?.verificationStatus));
+    } finally {
+      if (requestId === zoneCreateRequestId.current) setZoneCreateSubmitting(false);
+    }
+  }
+
+  async function handleDeleteZone(zoneId: number): Promise<void> {
+    if (zoneDeleteSubmitting || selectedFacilityId === undefined) return;
+    setZoneDeleteError("");
+    const facilityId = selectedFacilityId;
+    const requestId = ++zoneDeleteRequestId.current;
+    setZoneDeleteSubmitting(true);
+    try {
+      await deleteOperatorZone(accessToken, facilityId, zoneId);
+      if (requestId !== zoneDeleteRequestId.current) return;
+      setZones((current) => current.filter((zone) => zone.id !== zoneId));
+      setSlotZone("");
+      setSlotEditZone("");
+    } catch (cause) {
+      if (requestId !== zoneDeleteRequestId.current) return;
+      setZoneDeleteError(operatorError(cause, operator?.verificationStatus));
+    } finally {
+      if (requestId === zoneDeleteRequestId.current) {
+        setZoneDeleteSubmitting(false);
+      }
     }
   }
 
@@ -1942,6 +2120,91 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
           <button type="button" onClick={handleOpenSlotCreate}>
             Create Parking Slot
           </button>
+          <div className="section-heading compact-heading" style={{ marginTop: 20 }}>
+            <div>
+              <p className="section-kicker">Areas</p>
+              <h4>Parking zones</h4>
+            </div>
+            <button type="button" onClick={handleOpenZoneCreate}>
+              Add zone
+            </button>
+          </div>
+          {zonesState === "loading" && <p className="notice">Loading zones...</p>}
+          {zonesState === "error" && (
+            <p className="notice error" role="alert">
+              {zonesError}
+            </p>
+          )}
+          {zonesState === "success" && zones.length === 0 && (
+            <p className="empty-state">No zones yet. Add zones to group slots by area.</p>
+          )}
+          {zonesState === "success" && zones.length > 0 && (
+            <ul className="operator-slot-list">
+              {zones.map((zone) => (
+                <li key={zone.id}>
+                  <div className="operator-slot-summary">
+                    <strong>{zone.name}</strong>
+                    <button
+                      type="button"
+                      disabled={zoneDeleteSubmitting}
+                      onClick={() => void handleDeleteZone(zone.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                  <span>
+                    {zone.kind} · {zone.isActive ? "active" : "inactive"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {zoneDeleteError && (
+            <p className="notice error" role="alert">
+              {zoneDeleteError}
+            </p>
+          )}
+          {zoneCreateOpen && (
+            <form className="slot-create-form" onSubmit={(event) => void handleCreateZone(event)}>
+              <div className="section-heading compact-heading">
+                <h4>Add parking zone</h4>
+                <button type="button" onClick={handleCloseZoneCreate}>
+                  Cancel
+                </button>
+              </div>
+              <label htmlFor="zone-name">Zone name</label>
+              <input
+                id="zone-name"
+                maxLength={80}
+                value={zoneName}
+                placeholder="e.g. Building A · Basement 1"
+                onChange={(event) => setZoneName(event.target.value)}
+              />
+              <label htmlFor="zone-kind">
+                Kind <span className="optional">(optional)</span>
+              </label>
+              <input
+                id="zone-kind"
+                maxLength={32}
+                value={zoneKind}
+                placeholder="car"
+                onChange={(event) => setZoneKind(event.target.value)}
+              />
+              {zoneCreateError && (
+                <p className="notice error" role="alert">
+                  {zoneCreateError}
+                </p>
+              )}
+              <button type="submit" disabled={zoneCreateSubmitting}>
+                {zoneCreateSubmitting ? "Creating..." : "Add zone"}
+              </button>
+            </form>
+          )}
+          {zoneCreateSuccess && (
+            <p className="notice success" role="status">
+              {zoneCreateSuccess}
+            </p>
+          )}
           {slotCreateOpen && (
             <form className="slot-create-form" onSubmit={(event) => void handleCreateSlot(event)}>
               <div className="section-heading compact-heading">
@@ -1966,6 +2229,34 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                 value={slotVehicleType}
                 onChange={(event) => setSlotVehicleType(event.target.value)}
               />
+              <label htmlFor="slot-category">
+                Parking type <span className="optional">(server default: STANDARD)</span>
+              </label>
+              <select
+                id="slot-category"
+                value={slotCategory}
+                onChange={(event) => setSlotCategory(event.target.value as SlotCategory)}
+              >
+                <option value="">Use server default</option>
+                {SLOT_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {SLOT_CATEGORY_LABELS[category]}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="slot-zone">Zone</label>
+              <select
+                id="slot-zone"
+                value={slotZone}
+                onChange={(event) => setSlotZone(event.target.value)}
+              >
+                <option value="">No zone</option>
+                {zones.map((zone) => (
+                  <option key={zone.id} value={zone.id}>
+                    {zone.name}
+                  </option>
+                ))}
+              </select>
               <label htmlFor="slot-status">
                 Status <span className="optional">(server default: AVAILABLE)</span>
               </label>
@@ -2035,7 +2326,9 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                     </button>
                   </div>
                   <span>
-                    {slot.vehicleType} · {label(slot.status)} · reservations{" "}
+                    {slot.vehicleType} · {label(slot.status)} ·{" "}
+                    {SLOT_CATEGORY_LABELS[slot.category]}
+                    {slot.zoneName ? ` · ${slot.zoneName}` : ""} · reservations{" "}
                     {slot.reservationsEnabled ? "enabled" : "disabled"}
                   </span>
                   {slotEditId === slot.id && (
@@ -2058,6 +2351,33 @@ export default function OperatorDashboard({ accessToken }: { accessToken: string
                         value={slotEditVehicleType}
                         onChange={(event) => setSlotEditVehicleType(event.target.value)}
                       />
+                      <label htmlFor={`edit-slot-category-${slot.id}`}>Parking type</label>
+                      <select
+                        id={`edit-slot-category-${slot.id}`}
+                        value={slotEditCategory}
+                        onChange={(event) =>
+                          setSlotEditCategory(event.target.value as SlotCategory)
+                        }
+                      >
+                        {SLOT_CATEGORIES.map((category) => (
+                          <option key={category} value={category}>
+                            {SLOT_CATEGORY_LABELS[category]}
+                          </option>
+                        ))}
+                      </select>
+                      <label htmlFor={`edit-slot-zone-${slot.id}`}>Zone</label>
+                      <select
+                        id={`edit-slot-zone-${slot.id}`}
+                        value={slotEditZone}
+                        onChange={(event) => setSlotEditZone(event.target.value)}
+                      >
+                        <option value="">No zone</option>
+                        {zones.map((zone) => (
+                          <option key={zone.id} value={zone.id}>
+                            {zone.name}
+                          </option>
+                        ))}
+                      </select>
                       <label htmlFor={`edit-slot-status-${slot.id}`}>Status</label>
                       <select
                         id={`edit-slot-status-${slot.id}`}

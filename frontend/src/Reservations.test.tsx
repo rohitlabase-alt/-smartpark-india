@@ -142,6 +142,8 @@ const availability = {
       slotCode: "A01",
       facilityId: 4,
       zoneId: null,
+      zoneName: null,
+      category: "STANDARD",
       vehicleType: "car",
       status: "AVAILABLE" as const,
       reservationsEnabled: true,
@@ -153,6 +155,8 @@ const availability = {
       slotCode: "A02",
       facilityId: 4,
       zoneId: null,
+      zoneName: null,
+      category: "STANDARD",
       vehicleType: "car",
       status: "OCCUPIED" as const,
       reservationsEnabled: true,
@@ -164,6 +168,8 @@ const availability = {
       slotCode: "A03",
       facilityId: 4,
       zoneId: null,
+      zoneName: null,
+      category: "STANDARD",
       vehicleType: "car",
       status: "AVAILABLE" as const,
       reservationsEnabled: false,
@@ -175,6 +181,8 @@ const availability = {
       slotCode: "A04",
       facilityId: 4,
       zoneId: null,
+      zoneName: null,
+      category: "STANDARD",
       vehicleType: "car",
       status: "RESERVED" as const,
       reservationsEnabled: true,
@@ -182,6 +190,7 @@ const availability = {
       updatedAt: "2026-09-01T10:00:00.000Z",
     },
   ],
+  zones: [],
 };
 
 type Handler = (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>;
@@ -536,7 +545,7 @@ describe("BookingFlowScreen", () => {
     expect(buttonWithText("Back to facilities")).toBeTruthy();
   });
 
-  it("reserves, pays, and reveals a parking pass without a transaction-id input", async () => {
+  it("reserves (PENDING), then pays and reveals a parking pass through an explicit checkout", async () => {
     const fetchMock = routeFetch([
       ["/parking/4/availability", () => json(availability)],
       ["/payments/initiate", () => json({ payment: initiatedPayment })],
@@ -548,7 +557,6 @@ describe("BookingFlowScreen", () => {
         "/parking-sessions/by-reservation/BKG-PENDING987/pass",
         () => json({ verificationToken: "TOK-123" }),
       ],
-      // POST /reservations (create)
       [
         "/reservations",
         (_input, init) => {
@@ -570,9 +578,15 @@ describe("BookingFlowScreen", () => {
     await act(async () => buttonWithText("Reserve now").click());
     await settle();
 
+    // Phase 1: reservation is created but NOT auto-paid / auto-confirmed.
     expect(container.textContent).toContain("Confirm & pay");
     expect(container.textContent).toContain("Charged amount");
     expect(container.textContent).toContain("BKG-PENDING987");
+    expect(container.textContent).toContain("Pay ₹200 & confirm");
+    expect(
+      container.querySelector('button[role="option"]')!.closest("section")!.textContent,
+    ).toContain("UPI");
+    expect(container.textContent).not.toContain("View parking pass");
 
     const createCall = fetchMock.mock.calls.find(
       ([url, init]) => String(url).includes("/reservations") && init?.method === "POST",
@@ -581,6 +595,21 @@ describe("BookingFlowScreen", () => {
       facilityId: 4,
       slotId: 9,
     });
+    // No payment calls happen just by reserving.
+    expect(
+      urls(fetchMock).some((url) => url.includes("/payments/initiate") || url.includes("/verify")),
+    ).toBe(false);
+
+    // Phase 2: explicit checkout with a payment method.
+    await act(async () => buttonWithText("Card").click());
+    expect(container.textContent).toContain("Selected method");
+    expect(container.textContent).toContain("Card");
+
+    await act(async () => buttonWithText("Pay ₹200 & confirm").click());
+    await settle();
+
+    expect(container.textContent).toContain("View parking pass");
+    expect(container.textContent).toContain("BKG-PENDING987");
 
     await act(async () => buttonWithText("View parking pass").click());
     expect(container.textContent).toContain("Parking Pass");
@@ -595,6 +624,72 @@ describe("BookingFlowScreen", () => {
       container.querySelector('input[placeholder*="transaction" i], .payment-actions input'),
     ).toBeNull();
     expect(container.textContent).not.toContain("MOCK-BKG-UNIQUE-200");
+  });
+
+  it("keeps a reservation PENDING when the user never performs the explicit payment action", async () => {
+    const fetchMock = routeFetch([
+      ["/parking/4/availability", () => json(availability)],
+      [
+        "/reservations",
+        (_input, init) => {
+          if ((init?.method ?? "GET") === "POST")
+            return json({ reservation: pendingReservation }, 201);
+          return json({ error: { message: "Not found" } }, 404);
+        },
+      ],
+    ]);
+    await renderFlow();
+    await settle();
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[role="option"]')!.click(),
+    );
+    await act(async () => buttonWithText("Book this spot").click());
+    await act(async () => buttonWithText("Reserve now").click());
+    await settle();
+
+    // The payment step never ran, so no initiate/verify calls were made and nothing is
+    // confirmed. The pass must not be reachable.
+    expect(
+      urls(fetchMock).some((url) => url.includes("/payments/initiate") || url.includes("/verify")),
+    ).toBe(false);
+    expect(container.textContent).not.toContain("View parking pass");
+    expect(container.textContent).not.toContain("Parking Pass");
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/parking-sessions")),
+    ).toHaveLength(0);
+  });
+
+  it("does not confirm the booking when the payment fails", async () => {
+    routeFetch([
+      ["/parking/4/availability", () => json(availability)],
+      ["/payments/initiate", () => json({ payment: initiatedPayment })],
+      [
+        "/reservations",
+        (_input, init) => {
+          if ((init?.method ?? "GET") === "POST")
+            return json({ reservation: pendingReservation }, 201);
+          return json({ error: { message: "Not found" } }, 404);
+        },
+      ],
+    ]);
+    await renderFlow();
+    await settle();
+
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('button[role="option"]')!.click(),
+    );
+    await act(async () => buttonWithText("Book this spot").click());
+    await act(async () => buttonWithText("Reserve now").click());
+    await settle();
+
+    await act(async () => buttonWithText("Pay ₹200 & confirm").click());
+    await settle();
+
+    // Failed verification: the booking is NOT confirmed and no parking pass is revealed.
+    expect(container.textContent).not.toContain("View parking pass");
+    expect(container.textContent).not.toContain("Parking Pass");
+    expect(container.textContent).not.toContain("TOK-123");
   });
 
   it("shows the reservation creation error", async () => {

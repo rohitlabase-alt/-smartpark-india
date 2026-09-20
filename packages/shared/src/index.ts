@@ -129,6 +129,7 @@ export const FACILITY_TYPES = [
   "hospital",
   "corporate",
   "ev",
+  "society",
 ] as const;
 export type FacilityType = (typeof FACILITY_TYPES)[number];
 
@@ -235,6 +236,32 @@ export const PARKING_SLOT_STATUSES = [
 ] as const;
 export type ParkingSlotStatus = (typeof PARKING_SLOT_STATUSES)[number];
 
+/**
+ * Slot category vocabulary (docs/DATABASE.md §2.8, Phase 10 society parking).
+ * A category labels WHO the slot is intended for; it never bypasses the
+ * booking rules (reservationsEnabled + slot status remain the source of truth).
+ * STANDARD is the universal default for non-society facilities.
+ */
+export const SLOT_CATEGORIES = [
+  "STANDARD",
+  "RESIDENT",
+  "VISITOR",
+  "GUEST",
+  "EV",
+  "ACCESSIBLE",
+] as const;
+export type SlotCategory = (typeof SLOT_CATEGORIES)[number];
+
+/** Human label for a slot category (used by the web UI). */
+export const SLOT_CATEGORY_LABELS: Record<SlotCategory, string> = {
+  STANDARD: "Standard",
+  RESIDENT: "Resident",
+  VISITOR: "Visitor",
+  GUEST: "Guest",
+  EV: "EV charging",
+  ACCESSIBLE: "Accessible",
+};
+
 /** Normalized engine status vocabulary (docs/DATABASE.md §2.20). */
 export const AVAILABILITY_STATES = ["AVAILABLE", "OCCUPIED", "RESERVED", "UNKNOWN"] as const;
 export type AvailabilityState = (typeof AVAILABILITY_STATES)[number];
@@ -258,11 +285,42 @@ export interface ParkingSlot {
   slotCode: string;
   facilityId: number;
   zoneId: number | null;
+  zoneName: string | null;
   vehicleType: string;
+  category: SlotCategory;
   status: ParkingSlotStatus;
   reservationsEnabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Parking zone / area grouping (docs/DATABASE.md §2.7, Phase 10 society
+ * parking). Zones let a society organise inventory (Building A → Basement 1);
+ * they are owned by a facility and surface through the operator API and the
+ * public availability read.
+ */
+export interface ParkingZone {
+  id: number;
+  facilityId: number;
+  name: string;
+  kind: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Orchestrates the zone acceptance contract (facility may not be changed). */
+export interface CreateZoneRequest {
+  name: string;
+  kind?: string;
+}
+
+/** Patch contract: only the zone's own mutable fields may be edited. */
+export interface UpdateZoneRequest {
+  name?: string;
+  kind?: string;
+  isActive?: boolean;
 }
 
 /**
@@ -296,6 +354,8 @@ export interface FacilityAvailabilityResponse {
   confidence: AvailabilityConfidence;
   disclaimer: string;
   slots: ParkingSlot[];
+  /** Zone/area grouping for the facility (empty for zone-less facilities). */
+  zones: ParkingZone[];
 }
 
 /**
@@ -331,12 +391,17 @@ export interface PublicFacilityListResponse {
 export interface CreateSlotRequest {
   slotCode: string;
   vehicleType?: string;
+  category?: SlotCategory;
+  zoneId?: number;
   status?: ParkingSlotStatus;
   reservationsEnabled?: boolean;
 }
 
 export interface UpdateSlotRequest {
   vehicleType?: string;
+  category?: SlotCategory;
+  /** null clears the slot's zone assignment; omitted leaves it untouched. */
+  zoneId?: number | null;
   status?: ParkingSlotStatus;
   reservationsEnabled?: boolean;
 }
@@ -404,6 +469,11 @@ export interface Reservation {
 export interface CreateBookingRequest {
   facilityId: number;
   slotId?: number;
+  /**
+   * Optional zone scope for the booking. When supplied the zone must belong
+   * to the facility; when a slot is also supplied its zone must match.
+   */
+  zoneId?: number;
   startsAt: string;
   endsAt: string;
 }
@@ -548,6 +618,9 @@ export const AUDIT_ACTIONS = [
   "FACILITY_DEACTIVATED",
   "FACILITY_CREATED",
   "FACILITY_UPDATED",
+  "ZONE_CREATED",
+  "ZONE_UPDATED",
+  "ZONE_DELETED",
   "SLOT_CREATED",
   "SLOT_UPDATED",
   "RESERVATION_CREATED",
@@ -570,6 +643,7 @@ export type AuditEventAction = (typeof AUDIT_ACTIONS)[number];
 export const AUDIT_ENTITY_TYPES = [
   "OPERATOR",
   "FACILITY",
+  "PARKING_ZONE",
   "SLOT",
   "RESERVATION",
   "PAYMENT",

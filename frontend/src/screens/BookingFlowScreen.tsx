@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type {
-  FacilityAvailabilityResponse,
-  PublicParkingFacility,
-  Reservation,
+import {
+  SLOT_CATEGORIES,
+  SLOT_CATEGORY_LABELS,
+  type FacilityAvailabilityResponse,
+  type PublicParkingFacility,
+  type Reservation,
+  type SlotCategory,
 } from "@smartpark/shared";
 import { fetchFacilityAvailability } from "../api/availability";
 import { initiatePayment, verifyPayment } from "../api/payments";
@@ -24,6 +27,9 @@ import { vehicleTypeLabel } from "../utils/vehicle";
 
 type LoadState = "loading" | "success" | "error";
 type Step = "slots" | "details" | "payment" | "pass";
+
+const PAYMENT_METHODS = ["UPI", "Card", "NetBanking"] as const;
+type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 const DURATION_OPTIONS = [1, 2, 3, 4, 6, 8, 12];
 
@@ -78,6 +84,12 @@ export function BookingFlowScreen({
 
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
 
+  // Society/zoned-facility pickers: a zone narrows the slot set, a parking
+  // type (slot category) further narrows it. Defaults mean "any" so
+  // non-society facilities are unaffected.
+  const [selectedZoneId, setSelectedZoneId] = useState<number | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<SlotCategory | null>(null);
+
   const [date, setDate] = useState(DEFAULT_DATE());
   const [startTime, setStartTime] = useState(nextHourTime());
   const [duration, setDuration] = useState(2);
@@ -87,6 +99,7 @@ export function BookingFlowScreen({
   const [actionNotice, setActionNotice] = useState("");
 
   const [reservation, setReservation] = useState<Reservation | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("UPI");
   const [paymentConfirmed, setPaymentConfirmed] = useState(false);
   const [passToken, setPassToken] = useState<string | undefined>();
   const [passLoading, setPassLoading] = useState(false);
@@ -113,10 +126,37 @@ export function BookingFlowScreen({
     };
   }, [facility.id]);
 
-  const selectedSlot = useMemo(
-    () => availability?.slots.find((slot) => slot.id === selectedSlotId) ?? null,
-    [availability, selectedSlotId],
+  const zones = availability?.zones ?? [];
+
+  const zoneSlots = useMemo(() => {
+    const slots = availability?.slots ?? [];
+    return selectedZoneId === null ? slots : slots.filter((s) => s.zoneId === selectedZoneId);
+  }, [availability, selectedZoneId]);
+
+  const categoryOptions = useMemo(() => {
+    const present = new Set(zoneSlots.map((s) => s.category));
+    return SLOT_CATEGORIES.filter((c) => present.has(c));
+  }, [zoneSlots]);
+
+  const visibleSlots = useMemo(
+    () =>
+      selectedCategory === null
+        ? zoneSlots
+        : zoneSlots.filter((s) => s.category === selectedCategory),
+    [zoneSlots, selectedCategory],
   );
+
+  const selectedSlot = useMemo(
+    () => visibleSlots.find((slot) => slot.id === selectedSlotId) ?? null,
+    [visibleSlots, selectedSlotId],
+  );
+
+  // Drop the stale slot selection when the zone/parking-type filters hide it.
+  useEffect(() => {
+    if (selectedSlotId !== null && !visibleSlots.some((slot) => slot.id === selectedSlotId)) {
+      setSelectedSlotId(null);
+    }
+  }, [visibleSlots, selectedSlotId]);
 
   const endsAt = useMemo(() => {
     const start = combine(date, startTime);
@@ -143,7 +183,7 @@ export function BookingFlowScreen({
     return verified.reservation;
   }
 
-  async function handleCreateAndPay() {
+  async function handleReserveNow() {
     if (!selectedSlot) return;
     setBusy(true);
     setActionError("");
@@ -151,13 +191,13 @@ export function BookingFlowScreen({
     try {
       const created = await createReservation(accessToken, {
         facilityId: facility.id,
+        zoneId: selectedSlot.zoneId ?? undefined,
         slotId: selectedSlot.id,
         startsAt: combine(date, startTime).toISOString(),
         endsAt: endsAt.toISOString(),
       });
-      const finalReservation = await verifyPaymentFor(created.reservation);
-      setReservation(finalReservation);
-      setPaymentConfirmed(finalReservation.state === "CONFIRMED");
+      setReservation(created.reservation);
+      setPaymentMethod("UPI");
       setStep("payment");
     } catch (cause) {
       setActionError(errorMessage(cause, "Unable to create your reservation."));
@@ -274,6 +314,64 @@ export function BookingFlowScreen({
           )}
           {slotsState === "success" && availability && (
             <>
+              {zones.length > 0 && (
+                <div className="section-heading">
+                  <div>
+                    <p className="section-kicker">Zone</p>
+                    <h2>Where in {facility.name}?</h2>
+                  </div>
+                </div>
+              )}
+              {zones.length > 0 && (
+                <div className="chip-row" role="group" aria-label="Zone filter">
+                  <button
+                    type="button"
+                    className={`chip${selectedZoneId === null ? " selected" : ""}`}
+                    onClick={() => setSelectedZoneId(null)}
+                  >
+                    All zones
+                  </button>
+                  {zones.map((zone) => (
+                    <button
+                      key={zone.id}
+                      type="button"
+                      className={`chip${selectedZoneId === zone.id ? " selected" : ""}`}
+                      onClick={() => setSelectedZoneId(zone.id)}
+                    >
+                      {zone.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {categoryOptions.length > 1 && (
+                <>
+                  <div className="section-heading">
+                    <div>
+                      <p className="section-kicker">Parking type</p>
+                      <h2>Pick a parking type</h2>
+                    </div>
+                  </div>
+                  <div className="chip-row" role="group" aria-label="Parking type filter">
+                    <button
+                      type="button"
+                      className={`chip${selectedCategory === null ? " selected" : ""}`}
+                      onClick={() => setSelectedCategory(null)}
+                    >
+                      All types
+                    </button>
+                    {categoryOptions.map((category) => (
+                      <button
+                        key={category}
+                        type="button"
+                        className={`chip${selectedCategory === category ? " selected" : ""}`}
+                        onClick={() => setSelectedCategory(category)}
+                      >
+                        {SLOT_CATEGORY_LABELS[category]}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
               <div className="section-heading">
                 <div>
                   <p className="section-kicker">Pick your spot</p>
@@ -281,7 +379,7 @@ export function BookingFlowScreen({
                 </div>
               </div>
               <SlotPicker
-                slots={availability.slots}
+                slots={visibleSlots}
                 selectedId={selectedSlotId}
                 selectableOnly
                 onSelect={(slot) => setSelectedSlotId(slot.id)}
@@ -295,6 +393,16 @@ export function BookingFlowScreen({
                       {selectedSlot.slotCode} · {vehicleTypeLabel(selectedSlot.vehicleType)}
                     </strong>
                   </div>
+                  <div className="summary-row">
+                    <span>Parking type</span>
+                    <strong>{SLOT_CATEGORY_LABELS[selectedSlot.category]}</strong>
+                  </div>
+                  {selectedSlot.zoneName && (
+                    <div className="summary-row">
+                      <span>Zone</span>
+                      <strong>{selectedSlot.zoneName}</strong>
+                    </div>
+                  )}
                   <button
                     className="btn"
                     style={{ width: "100%", marginTop: 12 }}
@@ -320,6 +428,16 @@ export function BookingFlowScreen({
             <div className="summary-row">
               <dt>Slot</dt>
               <dd>{selectedSlot.slotCode}</dd>
+            </div>
+            {selectedSlot.zoneName && (
+              <div className="summary-row">
+                <dt>Zone</dt>
+                <dd>{selectedSlot.zoneName}</dd>
+              </div>
+            )}
+            <div className="summary-row">
+              <dt>Parking type</dt>
+              <dd>{SLOT_CATEGORY_LABELS[selectedSlot.category]}</dd>
             </div>
             <label htmlFor="booking-date">Date</label>
             <input
@@ -381,7 +499,7 @@ export function BookingFlowScreen({
               style={{ width: "100%", marginTop: 10 }}
               type="button"
               disabled={!date || !startTime}
-              onClick={() => void handleCreateAndPay()}
+              onClick={() => void handleReserveNow()}
             >
               {busy ? "Reserving..." : "Reserve now"}
             </button>
@@ -421,6 +539,29 @@ export function BookingFlowScreen({
               </div>
             )}
           </div>
+          <div className="section-heading">
+            <p className="section-kicker">Checkout</p>
+            <h2>Select a payment method</h2>
+          </div>
+          <div className="chip-row" role="group" aria-label="Payment method">
+            {PAYMENT_METHODS.map((method) => (
+              <button
+                key={method}
+                type="button"
+                role="option"
+                className={`chip${paymentMethod === method ? " selected" : ""}`}
+                aria-pressed={paymentMethod === method}
+                disabled={busy}
+                onClick={() => setPaymentMethod(method)}
+              >
+                {method}
+              </button>
+            ))}
+          </div>
+          <p className="disclaimer">
+            Selected method: <strong>{paymentMethod}</strong>. Charged amount is fixed by the
+            platform (facility rate × hours); you cannot edit it here.
+          </p>
           {busy ? (
             <ScreenLoader label="Processing payment with SmartPay..." />
           ) : paymentConfirmed ? (

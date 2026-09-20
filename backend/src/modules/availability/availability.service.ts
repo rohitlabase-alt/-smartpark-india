@@ -6,6 +6,7 @@ import type { FacilityAvailabilityResponse, PublicFacilityListResponse } from "@
 import { notFound } from "../../http/errors.js";
 import { readHourlyRate } from "../bookings/reservations.service.js";
 import { facilitiesRepository } from "../parking/facilities.repository.js";
+import { zonesRepository, toZoneDto } from "../parking/zones.repository.js";
 import { loadFacilityAvailability } from "./availability.repository.js";
 
 const DISCLAIMER = "Operator-reported availability. Not guaranteed.";
@@ -36,6 +37,7 @@ export const availabilityService = {
     }
 
     const data = await loadFacilityAvailability(facility);
+    const zones = await zonesRepository.listByFacility(facility.id);
     const hasData = data.lastUpdatedAt !== null;
     const confidence = deriveConfidence(hasData);
 
@@ -55,12 +57,15 @@ export const availabilityService = {
         slotCode: s.slotCode,
         facilityId: s.facilityId,
         zoneId: s.zoneId,
+        zoneName: s.zoneName,
         vehicleType: s.vehicleType,
+        category: s.category,
         status: s.status,
         reservationsEnabled: s.reservationsEnabled,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       })),
+      zones: zones.map(toZoneDto),
     };
   },
 

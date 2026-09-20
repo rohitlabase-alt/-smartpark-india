@@ -9,11 +9,12 @@ import type {
   ParkingSlotStatus,
   UpdateSlotRequest,
 } from "@smartpark/shared";
-import { forbidden, notFound, conflict } from "../../http/errors.js";
+import { forbidden, notFound, conflict, badRequest } from "../../http/errors.js";
 import { withTransaction } from "../../db.js";
 import { assertVerifiedOperator } from "../operators/operator-verification.js";
 import { facilitiesRepository } from "./facilities.repository.js";
 import { slotsRepository, toSlotDto } from "./slots.repository.js";
+import { zonesRepository } from "./zones.repository.js";
 import { hasActiveSessionForSlot } from "../sessions/sessions.repository.js";
 import { auditService } from "../audit/audit.service.js";
 
@@ -24,13 +25,16 @@ export const slotsService = {
     input: CreateSlotRequest,
   ): Promise<ParkingSlot> {
     await this.assertFacilityOwnership(userId, facilityId);
+    await assertZoneAssigned(facilityId, input.zoneId ?? null);
     return withTransaction(async (client) => {
       const slot = await slotsRepository.create(
         {
           slotCode: input.slotCode.trim().toUpperCase(),
           facilityId,
+          zoneId: input.zoneId ?? null,
           status: input.status ?? "AVAILABLE",
           vehicleType: input.vehicleType?.trim() || "car",
+          category: input.category ?? "STANDARD",
           reservationsEnabled: input.reservationsEnabled ?? true,
         },
         client,
@@ -40,7 +44,7 @@ export const slotsService = {
         action: "SLOT_CREATED",
         entityType: "SLOT",
         entityId: slot.id,
-        metadata: { facilityId, slotCode: slot.slotCode },
+        metadata: { facilityId, slotCode: slot.slotCode, zoneId: slot.zoneId },
       });
       return toSlotDto(slot);
     });
@@ -68,6 +72,12 @@ export const slotsService = {
         throw forbidden("FORBIDDEN", "This slot belongs to a different operator");
       }
 
+      // A zone assignment change must reference a zone of the slot's facility
+      // (null clears the assignment). Cross-facility zones are rejected.
+      if (input.zoneId !== undefined) {
+        await assertZoneAssigned(slot.facilityId, input.zoneId);
+      }
+
       // Manual occupancy guard: a slot that is backing an ACTIVE parking
       // session (the occupancy source of truth is parking_slots.status, and
       // entry sets it to OCCUPIED) must not be flipped away from OCCUPIED by
@@ -86,6 +96,8 @@ export const slotsService = {
         slotId,
         {
           vehicleType: input.vehicleType?.trim(),
+          zoneId: input.zoneId,
+          category: input.category,
           status: input.status,
           reservationsEnabled: input.reservationsEnabled,
         },
@@ -127,4 +139,18 @@ export function isKnownSlotStatus(status: string): status is ParkingSlotStatus {
     status === "MAINTENANCE" ||
     status === "UNKNOWN"
   );
+}
+
+/**
+ * Validates a slot's optional zone assignment: null means "no zone" (allowed),
+ * otherwise the zone must exist and belong to the slot's own facility. A
+ * client-supplied zone id from another facility is rejected with a 400 so no
+ * cross-facility existence is disclosed (docs/SECURITY.md §5).
+ */
+async function assertZoneAssigned(facilityId: number, zoneId: number | null): Promise<void> {
+  if (zoneId === null) return;
+  const zone = await zonesRepository.findById(zoneId);
+  if (!zone || zone.facilityId !== facilityId) {
+    throw badRequest("ZONE_NOT_IN_FACILITY", "Zone does not belong to the given facility");
+  }
 }

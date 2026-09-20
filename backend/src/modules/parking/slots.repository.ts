@@ -3,16 +3,24 @@
  * (docs/DATABASE.md §2.8/§2.20).
  */
 import type { PoolClient } from "pg";
-import type { AvailabilityState, ParkingSlot, ParkingSlotStatus } from "@smartpark/shared";
+import type {
+  AvailabilityState,
+  ParkingSlot,
+  ParkingSlotStatus,
+  SlotCategory,
+} from "@smartpark/shared";
 import { getPool, withTransaction } from "../../db.js";
 import { conflict } from "../../http/errors.js";
+import { zonesRepository } from "./zones.repository.js";
 
 export interface SlotRow {
   id: number;
   slotCode: string;
   facilityId: number;
   zoneId: number | null;
+  zoneName: string | null;
   vehicleType: string;
+  category: SlotCategory;
   status: ParkingSlotStatus;
   reservationsEnabled: boolean;
   createdAt: string;
@@ -25,8 +33,10 @@ interface SlotResult {
   facility_id: string;
   zone_id: string | null;
   vehicle_type: string;
+  category: string;
   status: string;
   reservations_enabled: boolean;
+  zone_name: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -37,7 +47,9 @@ function mapSlot(row: SlotResult): SlotRow {
     slotCode: row.slot_code,
     facilityId: Number(row.facility_id),
     zoneId: row.zone_id === null ? null : Number(row.zone_id),
+    zoneName: row.zone_name,
     vehicleType: row.vehicle_type,
+    category: row.category as SlotCategory,
     status: row.status as ParkingSlotStatus,
     reservationsEnabled: row.reservations_enabled,
     createdAt: row.created_at.toISOString(),
@@ -51,7 +63,9 @@ export function toSlotDto(row: SlotRow): ParkingSlot {
     slotCode: row.slotCode,
     facilityId: row.facilityId,
     zoneId: row.zoneId,
+    zoneName: row.zoneName,
     vehicleType: row.vehicleType,
+    category: row.category,
     status: row.status,
     reservationsEnabled: row.reservationsEnabled,
     createdAt: row.createdAt,
@@ -59,9 +73,22 @@ export function toSlotDto(row: SlotRow): ParkingSlot {
   };
 }
 
-const SELECT_COLUMNS = `
-  id, slot_code, facility_id, zone_id, vehicle_type, status,
+/** Aliased table columns joined with the zone name for read queries. */
+const SLOT_COLUMNS = `
+  s.id, s.slot_code, s.facility_id, s.zone_id, s.vehicle_type, s.status,
+  s.category, s.reservations_enabled, s.created_at, s.updated_at`;
+
+/** Unaliased columns for INSERT/UPDATE RETURNING (no join is possible). */
+const SLOT_RETURNING_COLUMNS = `
+  id, slot_code, facility_id, zone_id, vehicle_type, status, category,
   reservations_enabled, created_at, updated_at`;
+
+/** Fills the zone name for rows written without a join (RETURNING paths). */
+async function attachZoneName(slot: SlotRow): Promise<SlotRow> {
+  if (slot.zoneId === null) return slot;
+  const zone = await zonesRepository.findById(slot.zoneId);
+  return { ...slot, zoneName: zone?.name ?? null };
+}
 
 /** Maps a 23505 unique violation on slot_code to a 409 (API_SPEC style). */
 function mapSlotCodeViolation(err: unknown): never {
@@ -94,8 +121,10 @@ export const slotsRepository = {
     input: {
       slotCode: string;
       facilityId: number;
-      status: ParkingSlotStatus;
+      zoneId: number | null;
       vehicleType: string;
+      category: SlotCategory;
+      status: ParkingSlotStatus;
       reservationsEnabled: boolean;
     },
     client?: PoolClient,
@@ -112,7 +141,10 @@ export const slotsRepository = {
 
   async findById(id: number): Promise<SlotRow | undefined> {
     const { rows } = await getPool().query<SlotResult>(
-      `SELECT ${SELECT_COLUMNS} FROM parking_slots WHERE id = $1 AND deleted_at IS NULL`,
+      `SELECT ${SLOT_COLUMNS}, z.name AS zone_name
+       FROM parking_slots s
+       LEFT JOIN parking_zones z ON z.id = s.zone_id
+       WHERE s.id = $1 AND s.deleted_at IS NULL`,
       [id],
     );
     return rows[0] ? mapSlot(rows[0]) : undefined;
@@ -127,7 +159,11 @@ export const slotsRepository = {
    */
   async findByIdForUpdate(client: PoolClient, id: number): Promise<SlotRow | undefined> {
     const { rows } = await client.query<SlotResult>(
-      `SELECT ${SELECT_COLUMNS} FROM parking_slots WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      `SELECT ${SLOT_COLUMNS}, z.name AS zone_name
+       FROM parking_slots s
+       LEFT JOIN parking_zones z ON z.id = s.zone_id
+       WHERE s.id = $1 AND s.deleted_at IS NULL
+       FOR UPDATE OF s`,
       [id],
     );
     return rows[0] ? mapSlot(rows[0]) : undefined;
@@ -135,9 +171,11 @@ export const slotsRepository = {
 
   async listByFacility(facilityId: number): Promise<SlotRow[]> {
     const { rows } = await getPool().query<SlotResult>(
-      `SELECT ${SELECT_COLUMNS} FROM parking_slots
-       WHERE facility_id = $1 AND deleted_at IS NULL
-       ORDER BY id ASC`,
+      `SELECT ${SLOT_COLUMNS}, z.name AS zone_name
+       FROM parking_slots s
+       LEFT JOIN parking_zones z ON z.id = s.zone_id
+       WHERE s.facility_id = $1 AND s.deleted_at IS NULL
+       ORDER BY s.id ASC`,
       [facilityId],
     );
     return rows.map(mapSlot);
@@ -150,11 +188,19 @@ export const slotsRepository = {
    */
   async update(
     id: number,
-    fields: { vehicleType?: string; status?: ParkingSlotStatus; reservationsEnabled?: boolean },
+    fields: {
+      vehicleType?: string;
+      zoneId?: number | null;
+      category?: SlotCategory;
+      status?: ParkingSlotStatus;
+      reservationsEnabled?: boolean;
+    },
     client?: PoolClient,
   ): Promise<SlotRow | undefined> {
     const sets: Array<[string, unknown]> = [];
     if (fields.vehicleType !== undefined) sets.push(["vehicle_type", fields.vehicleType]);
+    if (fields.zoneId !== undefined) sets.push(["zone_id", fields.zoneId]);
+    if (fields.category !== undefined) sets.push(["category", fields.category]);
     if (fields.status !== undefined) sets.push(["status", fields.status]);
     if (fields.reservationsEnabled !== undefined)
       sets.push(["reservations_enabled", fields.reservationsEnabled]);
@@ -175,18 +221,29 @@ async function insertSlot(
   input: {
     slotCode: string;
     facilityId: number;
-    status: ParkingSlotStatus;
+    zoneId: number | null;
     vehicleType: string;
+    category: SlotCategory;
+    status: ParkingSlotStatus;
     reservationsEnabled: boolean;
   },
 ): Promise<SlotRow> {
   const { rows } = await client.query<SlotResult>(
-    `INSERT INTO parking_slots (slot_code, facility_id, status, vehicle_type, reservations_enabled)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING ${SELECT_COLUMNS}`,
-    [input.slotCode, input.facilityId, input.status, input.vehicleType, input.reservationsEnabled],
+    `INSERT INTO parking_slots (slot_code, facility_id, zone_id, vehicle_type, category, status, reservations_enabled)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING ${SLOT_RETURNING_COLUMNS}`,
+    [
+      input.slotCode,
+      input.facilityId,
+      input.zoneId,
+      input.vehicleType,
+      input.category,
+      input.status,
+      input.reservationsEnabled,
+    ],
   );
-  const slot = mapSlot(rows[0]!);
+  let slot = mapSlot(rows[0]!);
+  slot = await attachZoneName(slot);
   // Seed the engine output cache so newly created (default AVAILABLE) slots are
   // counted in the public availability read (docs/DATABASE.md §2.20).
   await upsertEngineState(client, slot.facilityId, slot.id, slot.status);
@@ -203,11 +260,12 @@ async function updateSlotOn(
   const { rows } = await client.query<SlotResult>(
     `UPDATE parking_slots SET ${assignments.join(", ")}, updated_at = now()
      WHERE id = $${values.length + 1} AND deleted_at IS NULL
-     RETURNING ${SELECT_COLUMNS}`,
+     RETURNING ${SLOT_RETURNING_COLUMNS}`,
     [...values, id],
   );
   if (!rows[0]) return undefined;
-  const slot = mapSlot(rows[0]);
+  let slot = mapSlot(rows[0]);
+  slot = await attachZoneName(slot);
 
   // Mirror the slot's operational status into the engine output cache
   // (docs/DATABASE.md §2.20) with source=MANUAL.
@@ -276,9 +334,11 @@ export async function countAvailabilityByFacility(facilityId: number): Promise<{
 /** Returns a facility's non-deleted slots for the public read. */
 export async function listActiveSlotsByFacility(facilityId: number): Promise<SlotRow[]> {
   const { rows } = await getPool().query<SlotResult>(
-    `SELECT ${SELECT_COLUMNS} FROM parking_slots
-     WHERE facility_id = $1 AND deleted_at IS NULL
-     ORDER BY id ASC`,
+    `SELECT ${SLOT_COLUMNS}, z.name AS zone_name
+     FROM parking_slots s
+     LEFT JOIN parking_zones z ON z.id = s.zone_id
+     WHERE s.facility_id = $1 AND s.deleted_at IS NULL
+     ORDER BY s.id ASC`,
     [facilityId],
   );
   return rows.map(mapSlot);

@@ -1,4 +1,4 @@
-import type { ParkingSlot } from "@smartpark/shared";
+import { SLOT_CATEGORY_LABELS, type ParkingSlot } from "@smartpark/shared";
 
 export type SlotPickView = "available" | "all";
 
@@ -45,7 +45,10 @@ export function SlotPicker({
               onClick={() => onSelect(slot)}
             >
               <span>{slot.slotCode}</span>
-              <small>{slot.vehicleType || "parking"}</small>
+              <small>
+                {slot.vehicleType || "parking"}
+                {slot.category !== "STANDARD" ? ` · ${SLOT_CATEGORY_LABELS[slot.category]}` : ""}
+              </small>
             </button>
           );
         })}

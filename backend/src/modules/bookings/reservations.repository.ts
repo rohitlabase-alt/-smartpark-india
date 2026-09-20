@@ -129,6 +129,7 @@ export const reservationsRepository = {
       reservationCode: string;
       userId: number;
       facilityId: number;
+      zoneId: number | null;
       slotId: number | null;
       startsAt: Date;
       endsAt: Date;
@@ -138,14 +139,15 @@ export const reservationsRepository = {
     try {
       const { rows } = await client.query<ReservationResult>(
         `INSERT INTO reservations
-           (reservation_code, user_id, facility_id, slot_id, starts_at, ends_at,
+           (reservation_code, user_id, facility_id, zone_id, slot_id, starts_at, ends_at,
             state, amount, payment_status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'PENDING_PAYMENT', $7, 'INITIATED')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING_PAYMENT', $8, 'INITIATED')
          RETURNING ${SELECT_COLUMNS}`,
         [
           input.reservationCode,
           input.userId,
           input.facilityId,
+          input.zoneId,
           input.slotId,
           input.startsAt,
           input.endsAt,

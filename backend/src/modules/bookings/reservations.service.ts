@@ -21,6 +21,7 @@ import { withTransaction } from "../../db.js";
 import type { FacilityRow } from "../parking/facilities.repository.js";
 import { facilitiesRepository } from "../parking/facilities.repository.js";
 import { slotsRepository } from "../parking/slots.repository.js";
+import { zonesRepository } from "../parking/zones.repository.js";
 import { reservationsRepository, toReservationDto } from "./reservations.repository.js";
 import { auditService } from "../audit/audit.service.js";
 
@@ -104,6 +105,7 @@ export const bookingsService = {
 
     return withTransaction(async (client) => {
       let slotId: number | null = null;
+      let zoneId: number | null = null;
       if (input.slotId !== undefined) {
         const slot = await slotsRepository.findById(input.slotId);
         if (!slot) {
@@ -119,12 +121,29 @@ export const bookingsService = {
           throw badRequest("SLOT_UNAVAILABLE", "This slot is not available for the requested time");
         }
         slotId = slot.id;
+        zoneId = slot.zoneId;
+      }
+
+      // Optional caller-supplied zone scope: must belong to the facility and,
+      // when a slot is chosen, must match the slot's own zone. This keeps the
+      // society (zone → parking type → slot) flow consistent without letting a
+      // client widen its booking to another facility's zone.
+      if (input.zoneId !== undefined) {
+        const zone = await zonesRepository.findById(input.zoneId);
+        if (!zone || zone.facilityId !== facility.id) {
+          throw badRequest("VALIDATION_ERROR", "Zone does not belong to the given facility");
+        }
+        if (slotId !== null && zoneId !== null && zoneId !== zone.id) {
+          throw badRequest("ZONE_SLOT_MISMATCH", "Slot does not belong to the selected zone");
+        }
+        zoneId = zone.id;
       }
 
       const created = await reservationsRepository.create(client, {
         reservationCode: generateReservationCode(),
         userId,
         facilityId: facility.id,
+        zoneId,
         slotId,
         startsAt: new Date(input.startsAt),
         endsAt: new Date(input.endsAt),
@@ -135,7 +154,7 @@ export const bookingsService = {
         action: "RESERVATION_CREATED",
         entityType: "RESERVATION",
         entityId: created.id,
-        metadata: { facilityId: facility.id, slotId, amount },
+        metadata: { facilityId: facility.id, slotId, zoneId, amount },
       });
       return { reservation: toReservationDto(created) };
     });

@@ -115,6 +115,8 @@ const slot: ParkingSlot = {
   slotCode: "A01",
   facilityId: 4,
   zoneId: null,
+  zoneName: null,
+  category: "STANDARD",
   vehicleType: "car",
   status: "AVAILABLE",
   reservationsEnabled: true,
@@ -492,13 +494,17 @@ describe("operator dashboard", () => {
       method: "PATCH",
       body: JSON.stringify({
         vehicleType: "motorcycle",
+        category: "STANDARD",
+        zoneId: null,
         status: "OCCUPIED",
         reservationsEnabled: false,
       }),
     });
     expect(container.querySelector(".slot-edit-form")).toBeNull();
     expect(container.textContent).toContain("A01 was updated with status OCCUPIED");
-    expect(container.textContent).toContain("motorcycle · OCCUPIED · reservations disabled");
+    expect(container.textContent).toContain(
+      "motorcycle · OCCUPIED · Standard · reservations disabled",
+    );
   });
 
   it("validates slot edits before making a PATCH request", async () => {

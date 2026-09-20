@@ -79,12 +79,17 @@ export const config: AppConfig = {
   // Backward-compatible with the Phase 1A PORT variable.
   port: Number(process.env.API_PORT ?? process.env.PORT ?? 4000),
   apiBaseUrl: process.env.API_BASE_URL ?? "http://localhost:4000/api/v1",
-  // Local development is intentionally scoped to the Vite origin. Production
+  // Local development is intentionally scoped to the Vite/React dev origins.
+  // Vite serves on :5173 and auto-advances to :5174 (then :5175 …) when the
+  // preferred port is taken, so the dev fallback covers the primary port and
+  // its first auto-advance, plus the equivalent IPv4 loopback forms. Production
   // must provide an explicit comma-separated allowlist and never falls back to
-  // a wildcard origin.
+  // a wildcard origin (corsOrigins is "" in production).
   corsOrigins: (
     process.env.CORS_ORIGINS ??
-    (process.env.NODE_ENV === "production" ? "" : "http://localhost:5173")
+    (process.env.NODE_ENV === "production"
+      ? ""
+      : "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174")
   )
     .split(",")
     .map((origin) => origin.trim())

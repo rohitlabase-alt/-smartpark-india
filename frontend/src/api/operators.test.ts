@@ -60,6 +60,8 @@ const slot: ParkingSlot = {
   slotCode: "A01",
   facilityId: 4,
   zoneId: null,
+  zoneName: null,
+  category: "STANDARD",
   vehicleType: "car",
   status: "AVAILABLE",
   reservationsEnabled: true,

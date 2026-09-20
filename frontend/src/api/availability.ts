@@ -2,6 +2,7 @@ import {
   AVAILABILITY_CONFIDENCES,
   AVAILABILITY_SOURCES,
   PARKING_SLOT_STATUSES,
+  SLOT_CATEGORIES,
   type FacilityAvailabilityResponse,
 } from "@smartpark/shared";
 
@@ -30,28 +31,49 @@ function isAvailabilityResponse(value: unknown): value is FacilityAvailabilityRe
     !Array.isArray(response.sources) ||
     !response.sources.every((source) => AVAILABILITY_SOURCES.includes(source)) ||
     typeof response.lastUpdatedAt !== "string" ||
-    !response.confidence ||
+    typeof response.confidence !== "string" ||
     !AVAILABILITY_CONFIDENCES.includes(response.confidence) ||
     typeof response.disclaimer !== "string" ||
-    !Array.isArray(response.slots)
+    !Array.isArray(response.slots) ||
+    !Array.isArray(response.zones)
   ) {
     return false;
   }
 
-  return response.slots.every(
-    (slot) =>
-      slot &&
-      typeof slot === "object" &&
-      typeof slot.id === "number" &&
-      typeof slot.slotCode === "string" &&
-      typeof slot.facilityId === "number" &&
-      (slot.zoneId === null || typeof slot.zoneId === "number") &&
-      typeof slot.vehicleType === "string" &&
-      PARKING_SLOT_STATUSES.includes(slot.status) &&
-      typeof slot.reservationsEnabled === "boolean" &&
-      typeof slot.createdAt === "string" &&
-      typeof slot.updatedAt === "string",
-  );
+  if (
+    !response.slots.every(
+      (slot) =>
+        slot &&
+        typeof slot === "object" &&
+        typeof slot.id === "number" &&
+        typeof slot.slotCode === "string" &&
+        typeof slot.facilityId === "number" &&
+        (slot.zoneId === null || typeof slot.zoneId === "number") &&
+        (slot.zoneName === null || typeof slot.zoneName === "string") &&
+        typeof slot.vehicleType === "string" &&
+        SLOT_CATEGORIES.includes(slot.category) &&
+        PARKING_SLOT_STATUSES.includes(slot.status) &&
+        typeof slot.reservationsEnabled === "boolean" &&
+        typeof slot.createdAt === "string" &&
+        typeof slot.updatedAt === "string",
+    ) ||
+    !response.zones.every(
+      (zone) =>
+        zone &&
+        typeof zone === "object" &&
+        typeof zone.id === "number" &&
+        typeof zone.facilityId === "number" &&
+        typeof zone.name === "string" &&
+        typeof zone.kind === "string" &&
+        typeof zone.isActive === "boolean" &&
+        typeof zone.createdAt === "string" &&
+        typeof zone.updatedAt === "string",
+    )
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export async function fetchFacilityAvailability(

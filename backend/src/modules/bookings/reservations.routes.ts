@@ -18,6 +18,7 @@ const createBookingSchema = z
   .object({
     facilityId: z.number().int().positive(),
     slotId: z.number().int().positive().optional(),
+    zoneId: z.number().int().positive().optional(),
     startsAt: z.string().min(1),
     endsAt: z.string().min(1),
   })
